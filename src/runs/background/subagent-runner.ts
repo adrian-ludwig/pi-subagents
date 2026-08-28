@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, StopReason } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { writeAsyncResultFile, writePendingAsyncResultFile } from "./result-files.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
@@ -100,7 +100,7 @@ import { markProcessTerminalCandidateLeaseRelease, writeProcessTerminalCandidate
 import { createOwnedProcessTreeController, type OwnedProcessTreeController } from "./owned-process-tree.ts";
 import { createSteeringStatus, recordSteeringRequest, steeringStatus, terminalSteeringNoticeState, updateSteeringTarget } from "./steering.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
-import { PROMPT_REDACTED, detectSubagentError, extractTextFromContent, extractToolArgsPreview, formatEmptyTerminalAssistantResponseError, getFinalOutput, hasEmptyTerminalAssistantResponse, readStatus } from "../../shared/utils.ts";
+import { PROMPT_REDACTED, detectSubagentError, extractTextFromContent, extractToolArgsPreview, formatEmptyTerminalAssistantResponseError, formatIncompleteAssistantResponseError, getFinalOutput, getTerminalAssistantStopReason, hasEmptyTerminalAssistantResponse, readStatus } from "../../shared/utils.ts";
 import { evaluateCompletionMutationGuard, expectsImplementationMutation, hasMutationToolCapability, validateImplementationToolContract } from "../shared/completion-guard.ts";
 import { planCompletionEvidence, projectSettlementDiagnostic } from "../shared/completion-evidence.ts";
 import { planAbortRecovery } from "../shared/abort-recovery.ts";
@@ -248,6 +248,7 @@ interface StepResult {
 	sessionFile?: string;
 	intercomTarget?: string;
 	model?: string;
+	stopReason?: StopReason;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
 	/** True when the dispatch failed because the input exceeded the model's context window. */
@@ -548,6 +549,7 @@ interface RunPiStreamingResult {
 	toolCount: number;
 	durationMs: number;
 	model?: string;
+	stopReason?: StopReason;
 	error?: string;
 	protocolError?: ProtocolOutputLimit;
 	finalOutput: string;
@@ -1119,6 +1121,7 @@ function runPiStreaming(
 				stderr,
 				exitCode: timedOut || stopped ? 1 : interrupted || (forcedDrainAfterFinalSuccess && !forcedDrainAfterEmptyTerminal) ? 0 : forcedTerminationSignal || signal ? (exitCode ?? 1) : exitCode,
 				messages,
+				stopReason: getTerminalAssistantStopReason(messages),
 				usage,
 				toolCount,
 				durationMs: Date.now() - startedAt,
@@ -1163,7 +1166,7 @@ function runPiStreaming(
 			const stderr = stderrTail.text();
 			const finalOutput = getFinalOutput(messages) || rawStdoutTail.text().trim();
 			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
-			resolve(omitUndefinedProperties({ stderr, exitCode: 1, messages, usage, toolCount, durationMs: Date.now() - startedAt, model, error: stopped ? (stopMessage ?? "Subagent stopped by user.") : timedOut ? (timeoutMessage ?? "Subagent timed out.") : error ?? assistantError ?? spawnErrorMessage, protocolError, finalOutput: (timedOut || stopped) && !finalOutput.trim() ? (stopped ? stopMessage ?? "Subagent stopped by user." : timeoutMessage ?? "Subagent timed out.") : finalOutput, outputState: finalOutput.trim() ? "present" : "absent", timedOut, stopped, observedMutationAttempt, structuredOutputToolInvoked, structuredOutputMessageStartIndex, watchdog: childWatchdogState, processInstanceId, processTree: { state: "unknown", reason: "verification-failed", diagnostic: spawnErrorMessage } }));
+			resolve(omitUndefinedProperties({ stderr, exitCode: 1, messages, stopReason: getTerminalAssistantStopReason(messages), usage, toolCount, durationMs: Date.now() - startedAt, model, error: stopped ? (stopMessage ?? "Subagent stopped by user.") : timedOut ? (timeoutMessage ?? "Subagent timed out.") : error ?? assistantError ?? spawnErrorMessage, protocolError, finalOutput: (timedOut || stopped) && !finalOutput.trim() ? (stopped ? stopMessage ?? "Subagent stopped by user." : timeoutMessage ?? "Subagent timed out.") : finalOutput, outputState: finalOutput.trim() ? "present" : "absent", timedOut, stopped, observedMutationAttempt, structuredOutputToolInvoked, structuredOutputMessageStartIndex, watchdog: childWatchdogState, processInstanceId, processTree: { state: "unknown", reason: "verification-failed", diagnostic: spawnErrorMessage } }));
 		});
 	});
 }
@@ -1384,6 +1387,7 @@ async function runSingleStepInner(
 				model: imported.model,
 				attemptedModels: imported.attemptedModels,
 				modelAttempts: imported.modelAttempts,
+				stopReason: imported.stopReason,
 				contextOverflow: imported.contextOverflow,
 				totalCost: imported.totalCost,
 				usage: imported.usage,
@@ -1853,6 +1857,9 @@ async function runSingleStepInner(
 			: undefined;
 		const runtimeAcknowledgedExtensions = readRuntimeAcknowledgedExtensions(runtimeAcknowledgedExtensionsPath);
 		cleanupTempDir(tempDir);
+		const incompleteAssistantResponseError = run.exitCode === 0 && !run.error && run.stopReason === "length"
+			? formatIncompleteAssistantResponseError(run.stopReason)
+			: undefined;
 		const midToolExitError = run.currentTool
 			&& isOrdinaryToolForMidToolExit(run.currentTool)
 			&& !run.interrupted
@@ -1870,7 +1877,7 @@ async function runSingleStepInner(
 		let structuredOutput: unknown;
 		let structuredError: string | undefined;
 		let validatedStructuredOutput = false;
-		if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !toolAvailabilityError && !midToolExitError) {
+		if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !toolAvailabilityError && !incompleteAssistantResponseError && !midToolExitError) {
 			if (!run.structuredOutputToolInvoked) {
 				structuredError = MISSING_STRUCTURED_OUTPUT_CALL_ERROR;
 			} else {
@@ -1892,7 +1899,7 @@ async function runSingleStepInner(
 		const errorMessages = validatedStructuredOutput
 			? run.messages.slice(run.structuredOutputMessageStartIndex ?? run.messages.length)
 			: run.messages;
-		const hiddenError = run.exitCode === 0 && !run.error && !toolAvailabilityError && !structuredError && !midToolExitError
+		const hiddenError = run.exitCode === 0 && !run.error && !toolAvailabilityError && !incompleteAssistantResponseError && !structuredError && !midToolExitError
 			? detectSubagentError(errorMessages)
 			: null;
 		const terminalEmptyAfterUsefulWork = !validatedStructuredOutput
@@ -1913,7 +1920,7 @@ async function runSingleStepInner(
 		const mutationEvidence = collectTrackedMutationEvidence(mutationSnapshot, step.cwd ?? ctx.cwd);
 		finalMutationEvidence = mutationEvidence;
 		const completionMutationEvidence = ctx.trackedMutationEvidenceForCompletionGuard === false ? undefined : mutationEvidence;
-		const completionGuard = run.exitCode === 0 && !run.error && !structuredError && !hiddenError?.hasError && !midToolExitError && !emptyOutputError && completionGuardEnabled
+		const completionGuard = run.exitCode === 0 && !run.error && !incompleteAssistantResponseError && !structuredError && !hiddenError?.hasError && !midToolExitError && !emptyOutputError && completionGuardEnabled
 			? evaluateCompletionMutationGuard(omitUndefinedProperties({
 				agent: step.agent,
 				task: taskForCompletionGuard,
@@ -1944,7 +1951,7 @@ async function runSingleStepInner(
 		finalRequiredOutputMissing = requiredOutput?.missing;
 		const missingRequiredOutputError = formatRequiredOutputError(requiredOutput);
 		const missingRequiredOutputAfterMutation = Boolean(missingRequiredOutputError) && (mutationAttemptObserved || Boolean(mutationEvidence.changedFiles.length));
-		const effectiveExitCode = toolAvailabilityError || completionEvidence.legacyFailureError || midToolExitError || structuredError || emptyOutputError || missingRequiredOutputError
+		const effectiveExitCode = toolAvailabilityError || incompleteAssistantResponseError || completionEvidence.legacyFailureError || midToolExitError || structuredError || emptyOutputError || missingRequiredOutputError
 			? 1
 			: hiddenError?.hasError
 				? (hiddenError.exitCode ?? 1)
@@ -1958,6 +1965,7 @@ async function runSingleStepInner(
 			stopped: run.stopped,
 		})) ? formatProcessSignalError(run.processSignal!) : undefined;
 		const underlyingError = toolAvailabilityError
+			?? incompleteAssistantResponseError
 			?? midToolExitError
 			?? structuredError
 			?? run.error
@@ -1983,6 +1991,7 @@ async function runSingleStepInner(
 			success: effectiveExitCode === 0 && !error,
 			exitCode: effectiveExitCode,
 			error,
+			stopReason: run.stopReason,
 			usage: run.usage,
 		});
 		modelAttempts.push(attempt);
@@ -2215,6 +2224,7 @@ async function runSingleStepInner(
 				model: finalResult?.model,
 				attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 				modelAttempts,
+				stopReason: finalResult?.stopReason,
 				usage,
 				error: effectiveFinalError,
 				acceptance: effectiveAcceptance,
@@ -2246,6 +2256,7 @@ async function runSingleStepInner(
 		model: finalResult?.model,
 		attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 		modelAttempts,
+		stopReason: finalResult?.stopReason,
 		contextOverflow: contextOverflow || undefined,
 		totalCost: costSummaryFromAttempts(modelAttempts),
 		usage,
@@ -2907,6 +2918,7 @@ async function runSubagent(
 				model: step.model,
 				attemptedModels: step.attemptedModels,
 				modelAttempts: step.modelAttempts,
+				stopReason: step.stopReason,
 				usage: usageFromAttempts(step.modelAttempts),
 				contextOverflow: step.contextOverflow,
 			})),
@@ -4281,6 +4293,7 @@ async function runSubagent(
 				setOptionalProperty(requiredStatusStep(statusPayload, fi), "thinking", resolveEffectiveThinking(singleResult.model, requiredStatusStep(statusPayload, fi).thinking));
 				setOptionalProperty(requiredStatusStep(statusPayload, fi), "attemptedModels", singleResult.attemptedModels);
 				setOptionalProperty(requiredStatusStep(statusPayload, fi), "modelAttempts", singleResult.modelAttempts);
+				setOptionalProperty(requiredStatusStep(statusPayload, fi), "stopReason", singleResult.stopReason);
 				setOptionalProperty(requiredStatusStep(statusPayload, fi), "contextOverflow", singleResult.contextOverflow);
 				setOptionalProperty(requiredStatusStep(statusPayload, fi), "totalCost", singleResult.totalCost);
 				if (singleResult.totalCost) {
@@ -4351,6 +4364,7 @@ async function runSubagent(
 					model: pr.model,
 					attemptedModels: pr.attemptedModels,
 					modelAttempts: pr.modelAttempts,
+					stopReason: pr.stopReason,
 					contextOverflow: pr.contextOverflow,
 					totalCost: pr.totalCost,
 					usage: pr.usage,
@@ -4685,6 +4699,7 @@ async function runSubagent(
 						setOptionalProperty(requiredStatusStep(statusPayload, fi), "thinking", resolveEffectiveThinking(singleResult.model, requiredStatusStep(statusPayload, fi).thinking));
 						setOptionalProperty(requiredStatusStep(statusPayload, fi), "attemptedModels", singleResult.attemptedModels);
 						setOptionalProperty(requiredStatusStep(statusPayload, fi), "modelAttempts", singleResult.modelAttempts);
+						setOptionalProperty(requiredStatusStep(statusPayload, fi), "stopReason", singleResult.stopReason);
 						setOptionalProperty(requiredStatusStep(statusPayload, fi), "contextOverflow", singleResult.contextOverflow);
 						setOptionalProperty(requiredStatusStep(statusPayload, fi), "totalCost", singleResult.totalCost);
 						if (singleResult.totalCost) {
@@ -4796,6 +4811,7 @@ async function runSubagent(
 						model: pr.model,
 						attemptedModels: pr.attemptedModels,
 						modelAttempts: pr.modelAttempts,
+						stopReason: pr.stopReason,
 						contextOverflow: pr.contextOverflow,
 						totalCost: pr.totalCost,
 						usage: pr.usage,
@@ -5055,6 +5071,7 @@ async function runSubagent(
 				model: singleResult.model,
 				attemptedModels: singleResult.attemptedModels,
 				modelAttempts: singleResult.modelAttempts,
+				stopReason: singleResult.stopReason,
 				contextOverflow: singleResult.contextOverflow,
 				totalCost: singleResult.totalCost,
 				usage: singleResult.usage,
@@ -5138,6 +5155,7 @@ async function runSubagent(
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "thinking", resolveEffectiveThinking(singleResult.model, requiredStatusStep(statusPayload, flatIndex).thinking));
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "attemptedModels", singleResult.attemptedModels);
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "modelAttempts", singleResult.modelAttempts);
+			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "stopReason", singleResult.stopReason);
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "contextOverflow", singleResult.contextOverflow);
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "totalCost", singleResult.totalCost);
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "error", stopped || childStopped ? stopMessage : timedOut ? (timeoutMessage ?? "Subagent timed out.") : singleResult.error);
@@ -5418,6 +5436,7 @@ async function runSubagent(
 				model: r.model,
 				attemptedModels: r.attemptedModels,
 				modelAttempts: r.modelAttempts,
+				stopReason: r.stopReason,
 				contextOverflow: r.contextOverflow,
 				totalCost: r.totalCost,
 				usage: r.usage,

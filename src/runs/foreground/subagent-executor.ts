@@ -743,6 +743,7 @@ function rememberForegroundRun(state: SubagentState, input: { runId: string; mod
 				...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
 				...(result.error ? { error: result.error } : {}),
 				...(result.finalOutput ? { finalOutput: result.finalOutput } : {}),
+				...(result.stopReason ? { stopReason: result.stopReason } : {}),
 				...(result.outputState ? { outputState: result.outputState } : {}),
 				...(result.outputMode ? { outputMode: result.outputMode } : {}),
 				...(result.savedOutputPath ? { savedOutputPath: result.savedOutputPath } : {}),
@@ -825,6 +826,7 @@ function updateRememberedForegroundChild(state: SubagentState, input: { runId: s
 		...(input.result.exitCode !== undefined ? { exitCode: input.result.exitCode } : {}),
 		...(input.result.error ? { error: input.result.error } : {}),
 		...(input.result.finalOutput ? { finalOutput: input.result.finalOutput } : {}),
+		...(input.result.stopReason ? { stopReason: input.result.stopReason } : {}),
 		outputState: input.result.outputState,
 		outputMode: input.result.outputMode,
 		savedOutputPath: input.result.savedOutputPath,
@@ -2146,6 +2148,7 @@ async function resumeAsyncRun(input: {
 			...(completed.model ? { model: completed.model } : {}),
 			...(completed.attemptedModels ? { attemptedModels: completed.attemptedModels } : {}),
 			...(completed.modelAttempts ? { modelAttempts: completed.modelAttempts } : {}),
+			...(completed.stopReason ? { stopReason: completed.stopReason } : {}),
 			...(completed.contextOverflow ? { contextOverflow: true } : {}),
 			...(completed.structuredOutput !== undefined ? { structuredOutput: completed.structuredOutput } : {}),
 			...(completed.structuredOutputPath ? { structuredOutputPath: completed.structuredOutputPath } : {}),
@@ -3121,6 +3124,7 @@ async function waitForWorkflowAsyncSingleResult(
 		...(completed.model ? { model: completed.model } : {}),
 		...(completed.attemptedModels ? { attemptedModels: completed.attemptedModels } : {}),
 		...(completed.modelAttempts ? { modelAttempts: completed.modelAttempts } : {}),
+		...(completed.stopReason ? { stopReason: completed.stopReason } : {}),
 		...(completed.contextOverflow ? { contextOverflow: true } : {}),
 		...(completed.structuredOutput !== undefined ? { structuredOutput: completed.structuredOutput } : {}),
 		...(completed.structuredOutputPath ? { structuredOutputPath: completed.structuredOutputPath } : {}),
@@ -4115,6 +4119,7 @@ function workflowChildResult(
 	const structured = result.details.results.map((child) => child.structuredOutput).filter((value) => value !== undefined);
 	const resolvedAgents = [...new Set(result.details.results.map((child) => child.agent).filter((agent): agent is string => Boolean(agent)))];
 	const resolvedContexts = [...new Set(result.details.results.map((child) => child.context).filter((context): context is "fresh" | "fork" => context === "fresh" || context === "fork"))];
+	const stopReasons = [...new Set(result.details.results.map((child) => child.stopReason).filter((stopReason): stopReason is NonNullable<SingleResult["stopReason"]> => Boolean(stopReason)))];
 	const runId = result.details.runId ?? result.details.asyncId;
 	let resumability: WorkflowScriptChildResult["resumability"];
 	if (!runId || !resumeState) {
@@ -4154,6 +4159,7 @@ function workflowChildResult(
 		...(runId ? { runId } : {}),
 		output,
 		...(!ok ? { error: failureError } : {}),
+		...(stopReasons.length === 1 ? { stopReason: stopReasons[0] } : {}),
 		...(detached ? { detached: true } : {}),
 		...(interrupted ? { interrupted: true } : {}),
 		...(stopped ? { stopped: true } : {}),

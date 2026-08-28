@@ -47,6 +47,8 @@ import {
 	detectSubagentError,
 	hasEmptyTerminalAssistantResponse,
 	formatEmptyTerminalAssistantResponseError,
+	formatIncompleteAssistantResponseError,
+	getTerminalAssistantStopReason,
 	extractToolArgsPreview,
 	extractTextFromContent,
 	MAX_STREAMED_RECENT_TOOLS,
@@ -169,6 +171,7 @@ function persistSingleResultMetadata(input: {
 		model: target.model,
 		attemptedModels: target.attemptedModels,
 		modelAttempts: target.modelAttempts,
+		stopReason: target.stopReason,
 		durationMs: target.progressSummary?.durationMs,
 		toolCount: target.progressSummary?.toolCount,
 		error: target.error,
@@ -1478,6 +1481,7 @@ async function runSingleAttempt(
 		}
 	});
 	result.exitCode = exitCode;
+	result.stopReason = getTerminalAssistantStopReason(result.messages ?? []);
 	if (afterCompactionSettlement) {
 		(result as AbortRecoverySingleResult)[AFTER_COMPACTION_SETTLEMENT] = true;
 	}
@@ -1510,6 +1514,9 @@ async function runSingleAttempt(
 			exitCode: processExitCode,
 			processSignal: result.processSignal,
 		});
+	}
+	if (result.stopReason === "length" && !result.error) {
+		result.error = formatIncompleteAssistantResponseError(result.stopReason);
 	}
 	result.error = formatSubagentExtensionConflictError(result.error, {
 		agent: agent.name,
@@ -2030,6 +2037,7 @@ async function runSyncCompletionInner(
 				success: attemptSucceeded,
 				exitCode: result.exitCode,
 				error: result.error,
+				stopReason: result.stopReason,
 				usage: { ...result.usage },
 			};
 			modelAttempts.push(attempt);

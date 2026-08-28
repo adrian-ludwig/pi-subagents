@@ -73,6 +73,7 @@ interface ModelAttempt {
 	success?: boolean;
 	exitCode?: number;
 	error?: string;
+	stopReason?: string;
 }
 
 interface ProgressSummary {
@@ -123,6 +124,7 @@ interface RunSyncResult {
 	error?: string;
 	protocolError?: { code?: string; stream?: string; limitBytes?: number; observedBytes?: number };
 	model?: string;
+	stopReason?: string;
 	skills?: string[];
 	skillsWarning?: string;
 	attemptedModels?: string[];
@@ -490,6 +492,26 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(result.details.mode, "single");
 		assert.equal(mockPi.callCount(), 1);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /Console:/);
+	});
+
+	it("returns length-stop failures through the public single-child result", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const lengthMessage = events.assistantMessage("partial public response") as { message: { stopReason: string } };
+		lengthMessage.message.stopReason = "length";
+		mockPi.onCall({ jsonl: [lengthMessage, { type: "agent_settled" }] });
+		const executor = makeExecutor([makeAgent("echo")]);
+
+		const result = await executor.executePublic(
+			"structured-single-length",
+			{ agent: "echo", task: "Run through workflow", async: false },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, true);
+		assert.equal(result.details.results[0]?.stopReason, "length");
+		assert.match(result.details.results[0]?.error ?? "", /stopReason "length"/);
+		assert.equal(result.details.results[0]?.finalOutput, "partial public response");
 	});
 
 	it("keeps public structured children alive when tool results backfill without execution_end", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
@@ -6240,15 +6262,17 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.ok(Date.now() - startedAt >= 1200, "foreground runner must not terminate during compaction retry");
 	});
 
-	it("treats agent_settled as a clean terminal watermark", async () => {
-		const nonTerminalMessage = events.assistantMessage("settled without a terminal assistant stop") as { message: { stopReason: string } };
-		nonTerminalMessage.message.stopReason = "length";
-		mockPi.onCall({ jsonl: [nonTerminalMessage, { type: "agent_settled" }], keepAliveAfterFinalMessageMs: 5000 });
+	it("fails a settled child whose final assistant response hit the length limit", async () => {
+		const lengthMessage = events.assistantMessage("partial response") as { message: { stopReason: string } };
+		lengthMessage.message.stopReason = "length";
+		mockPi.onCall({ jsonl: [lengthMessage, { type: "agent_settled" }], keepAliveAfterFinalMessageMs: 5000 });
 		const startedAt = Date.now();
 		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Wait until settled", { acceptance: false });
-		assert.equal(result.exitCode, 0);
-		assert.equal(result.error, undefined);
-		assert.equal(getFinalOutput(result.messages), "settled without a terminal assistant stop");
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.stopReason, "length");
+		assert.equal(result.modelAttempts?.[0]?.stopReason, "length");
+		assert.match(result.error ?? "", /stopReason "length"/);
+		assert.equal(getFinalOutput(result.messages), "partial response");
 		assert.ok(Date.now() - startedAt < 4000, "agent_settled should trigger bounded child cleanup");
 	});
 

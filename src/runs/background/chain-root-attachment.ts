@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { resultFilePath, resultPayloadPathForSessionRun } from "./result-files.ts";
+import type { StopReason } from "@earendil-works/pi-ai";
 import type { AcceptanceLedger, ArtifactPaths, AsyncStatus, CostSummary, EffectsProjection, ExecutionProjection, ModelAttempt, Usage } from "../../shared/types.ts";
 import { readStatus } from "../../shared/utils.ts";
 
@@ -24,6 +25,7 @@ export interface ImportedAsyncRootResult {
 	model?: string;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
+	stopReason?: StopReason;
 	contextOverflow?: boolean;
 	totalCost?: CostSummary;
 	usage?: Usage;
@@ -63,6 +65,7 @@ interface AsyncResultFile {
 		model?: string;
 		attemptedModels?: string[];
 		modelAttempts?: ModelAttempt[];
+		stopReason?: StopReason;
 		contextOverflow?: boolean;
 		totalCost?: CostSummary;
 		usage?: Usage;
@@ -160,6 +163,7 @@ function outputFromTerminalStatus(root: ImportedAsyncRoot, status: AsyncStatus, 
 		...(step?.model ? { model: step.model } : {}),
 		...(step?.attemptedModels ? { attemptedModels: step.attemptedModels } : {}),
 		...(step?.modelAttempts ? { modelAttempts: step.modelAttempts } : {}),
+		...(step?.stopReason ? { stopReason: step.stopReason } : {}),
 		...(step?.contextOverflow ? { contextOverflow: true } : {}),
 		...(step?.totalCost ? { totalCost: step.totalCost } : {}),
 		...(usage ? { usage } : {}),
@@ -188,6 +192,7 @@ function outputFromTimeout(root: ImportedAsyncRoot, status: AsyncStatus | null, 
 		...(step?.model ? { model: step.model } : {}),
 		...(step?.attemptedModels ? { attemptedModels: step.attemptedModels } : {}),
 		...(step?.modelAttempts ? { modelAttempts: step.modelAttempts } : {}),
+		...(step?.stopReason ? { stopReason: step.stopReason } : {}),
 		...(step?.contextOverflow ? { contextOverflow: true } : {}),
 		...(step?.totalCost ? { totalCost: step.totalCost } : {}),
 		...(usage ? { usage } : {}),
@@ -221,6 +226,7 @@ function buildImportedResult(root: ImportedAsyncRoot, status: AsyncStatus | null
 		...(child?.model ?? step?.model ? { model: child?.model ?? step?.model } : {}),
 		...(child?.attemptedModels ?? step?.attemptedModels ? { attemptedModels: child?.attemptedModels ?? step?.attemptedModels } : {}),
 		...(child?.modelAttempts ?? step?.modelAttempts ? { modelAttempts: child?.modelAttempts ?? step?.modelAttempts } : {}),
+		...(child?.stopReason ?? step?.stopReason ? { stopReason: child?.stopReason ?? step?.stopReason } : {}),
 		...(child?.contextOverflow || step?.contextOverflow ? { contextOverflow: true } : {}),
 		...(child?.totalCost ?? step?.totalCost ? { totalCost: child?.totalCost ?? step?.totalCost } : {}),
 		...(usage ? { usage } : {}),
