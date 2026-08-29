@@ -100,6 +100,7 @@ interface ResultChildOutcome {
 	thinking?: string;
 	attemptedModels?: string[];
 	modelAttempts?: NonNullable<AsyncStatus["steps"]>[number]["modelAttempts"];
+	stopReason?: NonNullable<AsyncStatus["steps"]>[number]["stopReason"];
 	contextOverflow?: boolean;
 }
 
@@ -168,6 +169,7 @@ function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: 
 			thinking,
 			attemptedModels: child?.attemptedModels ?? step.attemptedModels,
 			modelAttempts: child?.modelAttempts ?? step.modelAttempts,
+			stopReason: child?.stopReason ?? step.stopReason,
 			contextOverflow: child?.contextOverflow ?? step.contextOverflow,
 		};
 	});
@@ -265,6 +267,7 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 				model: step.model,
 				attemptedModels: step.attemptedModels,
 				modelAttempts: step.modelAttempts,
+				stopReason: step.stopReason,
 				contextOverflow: step.contextOverflow,
 				sessionFile: step.sessionFile,
 			})),

@@ -46,7 +46,7 @@ describe("async stale-run reconciliation", () => {
 				startedAt: 1000,
 				lastUpdate: 1000,
 				currentStep: 0,
-				steps: [{ agent: "scout", status: "running", startedAt: 1000, contextOverflow: true }],
+				steps: [{ agent: "scout", status: "running", startedAt: 1000, contextOverflow: true, stopReason: "length" }],
 			});
 
 			const result = reconcileAsyncRun(asyncDir, {
@@ -71,6 +71,7 @@ describe("async stale-run reconciliation", () => {
 			assert.equal(resultJson.state, "failed");
 			assert.equal(resultJson.exitCode, 1);
 			assert.equal(resultJson.results[0].contextOverflow, true);
+			assert.equal(resultJson.results[0].stopReason, "length");
 			assert.match(resultJson.summary, /process 12345 exited or disappeared/);
 			assert.match(fs.readFileSync(path.join(asyncDir, "events.jsonl"), "utf-8"), /subagent\.run\.repaired_stale/);
 
@@ -214,7 +215,7 @@ describe("async stale-run reconciliation", () => {
 				state: "failed",
 				results: [
 					{ agent: "scout", success: true, sessionFile: scoutSession, model: "fast", attemptedModels: ["planned-scout", "fast"] },
-					{ agent: "worker", success: false, error: "boom", sessionFile: workerSession, model: "careful", attemptedModels: ["planned-worker", "careful"], contextOverflow: true },
+					{ agent: "worker", success: false, error: "boom", sessionFile: workerSession, model: "careful", attemptedModels: ["planned-worker", "careful"], stopReason: "length", contextOverflow: true },
 				],
 			}, null, 2), "utf-8");
 
@@ -236,6 +237,7 @@ describe("async stale-run reconciliation", () => {
 			assert.equal(result.status?.steps?.[1]?.error, "boom");
 			assert.equal(result.status?.steps?.[1]?.model, "careful");
 			assert.deepEqual(result.status?.steps?.[1]?.attemptedModels, ["planned-worker", "careful"]);
+			assert.equal(result.status?.steps?.[1]?.stopReason, "length");
 			assert.equal(result.status?.steps?.[1]?.contextOverflow, true);
 			assert.equal(result.status?.steps?.[1]?.sessionFile, workerSession);
 		} finally {

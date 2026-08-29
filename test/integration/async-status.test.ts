@@ -72,7 +72,7 @@ describe("async status helpers", () => {
 				runFanoutBudget: { used: 2, limit: 64, remaining: 62 },
 				outputFile,
 				steps: [
-					{ agent: "scout", status: "complete", durationMs: 10, description: "Inspect auth only" },
+					{ agent: "scout", status: "complete", durationMs: 10, description: "Inspect auth only", stopReason: "length" },
 					{ agent: "worker", status: "running", durationMs: 20, description: "Patch billing only", contextLimit: 128_000, toolBudgetBlocked: true, watchdog: { phase: "stale", seq: 2, lastUpdate: 200, followUpPending: false } },
 				],
 			});
@@ -97,6 +97,7 @@ describe("async status helpers", () => {
 			assert.equal(runs[0]?.steps[1]?.agent, "worker");
 			assert.equal(runs[0]?.steps[1]?.status, "running");
 			assert.equal(runs[0]?.steps[0]?.description, "Inspect auth only");
+			assert.equal(runs[0]?.steps[0]?.stopReason, "length");
 			assert.equal(runs[0]?.steps[1]?.description, "Patch billing only");
 			assert.equal(runs[0]?.steps[1]?.contextLimit, 128_000);
 			assert.equal(runs[0]?.steps[1]?.toolBudgetBlocked, true);
