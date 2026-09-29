@@ -5,9 +5,9 @@
  * interrupt, timeout, stop, and steer requests, and folds the run into the
  * step result the runner finalizes.
  */
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, StopReason } from "@earendil-works/pi-ai";
 import type { ChildTranscriptWriter } from "../../shared/child-transcript.ts";
-import { SUBAGENT_STOPPED_MESSAGE, SUBAGENT_TIMED_OUT_MESSAGE, assistantMessageError, extractTextFromContent, extractToolArgsPreview, getFinalOutput, hasEmptyTerminalAssistantResponse } from "../../shared/utils.ts";
+import { SUBAGENT_STOPPED_MESSAGE, SUBAGENT_TIMED_OUT_MESSAGE, assistantMessageError, extractTextFromContent, extractToolArgsPreview, getFinalOutput, getTerminalAssistantStopReason, hasEmptyTerminalAssistantResponse } from "../../shared/utils.ts";
 import { qualifyModelWithProvider } from "../../shared/model-info.ts";
 import type { EffectsProjection, RuntimeAcknowledgedChildExtensions, SubagentOutputState, ToolBudgetState, Usage } from "../../shared/types.ts";
 import {
@@ -110,6 +110,7 @@ export interface RunChildSessionInput {
 export interface RunChildSessionResult {
 	exitCode: number;
 	messages: Message[];
+	stopReason?: StopReason;
 	usage: Usage;
 	toolCount: number;
 	durationMs: number;
@@ -640,6 +641,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				const result: RunChildSessionResult = omitUndefined({
 					exitCode,
 					messages,
+					stopReason: getTerminalAssistantStopReason(messages),
 					usage: terminalUsage,
 					toolCount,
 					durationMs: Date.now() - startedAt,
