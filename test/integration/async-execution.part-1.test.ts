@@ -1308,6 +1308,18 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.ok(Date.now() - startedAt >= 1200, "background runner must not terminate during compaction retry");
 	});
 
+	it("background treats agent_settled as a clean terminal watermark", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ jsonl: [mockAssistantMessage("settled async without a terminal assistant stop", "tool_use"), { type: "agent_settled" }], keepAliveAfterFinalMessageMs: 15_000 });
+		const id = `async-lifecycle-settled-${Date.now().toString(36)}`;
+		const startedAt = Date.now();
+		launchProtocolTest(id);
+		const payload = await readAsyncPayload(id);
+		assert.equal(payload.success, true);
+		assert.equal(payload.results[0]?.error, undefined);
+		assert.equal(payload.results[0]?.output, "settled async without a terminal assistant stop");
+		assert.ok(Date.now() - startedAt < 10_000, "agent_settled should trigger bounded child cleanup");
+	});
+
 	it("background fails a settled child whose final assistant response hit the length limit", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		const lengthMessage = mockAssistantMessage("partial async response") as { message: { stopReason: string } };
 		lengthMessage.message.stopReason = "length";
@@ -1320,6 +1332,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.results[0]?.stopReason, "length");
 		assert.match(payload.results[0]?.error ?? "", /stopReason "length"/);
 		assert.equal(payload.results[0]?.output, "partial async response");
+		const status = await waitForAsyncState(id, (candidate) => candidate.state === "failed");
+		assert.equal(status.steps?.[0]?.stopReason, "length");
 		assert.ok(Date.now() - startedAt < 10_000, "agent_settled should trigger bounded child cleanup");
 	});
 
