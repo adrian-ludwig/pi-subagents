@@ -70,6 +70,7 @@ interface RuntimeAcknowledgedExtensions {
 }
 
 interface RunSyncResult {
+	stopReason?: string;
 	exitCode: number;
 	agent: string;
 	task?: string;
