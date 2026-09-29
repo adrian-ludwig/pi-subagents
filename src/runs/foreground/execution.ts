@@ -44,6 +44,8 @@ import {
 	detectSubagentError,
 	hasEmptyTerminalAssistantResponse,
 	formatEmptyTerminalAssistantResponseError,
+	formatIncompleteAssistantResponseError,
+	getTerminalAssistantStopReason,
 	extractToolArgsPreview,
 	extractTextFromContent,
 	MAX_STREAMED_RECENT_TOOLS,
@@ -153,6 +155,7 @@ function persistSingleResultMetadata(input: {
 		usage: target.usage,
 		model: target.model,
 		requestedModel: target.requestedModel,
+		stopReason: target.stopReason,
 		durationMs: target.progressSummary?.durationMs,
 		toolCount: target.progressSummary?.toolCount,
 		error: target.error,
@@ -1418,6 +1421,7 @@ async function runSingleAttempt(
 		})();
 	});
 	result.exitCode = exitCode;
+	result.stopReason = getTerminalAssistantStopReason(result.messages ?? []);
 	if (afterCompactionSettlement) {
 		(result as AbortRecoverySingleResult)[AFTER_COMPACTION_SETTLEMENT] = true;
 	}
@@ -1444,6 +1448,9 @@ async function runSingleAttempt(
 		&& !toolAvailabilityError) {
 		result.exitCode = 1;
 		result.error = formatMidToolExitError({ toolName: progress.currentTool });
+	}
+	if (result.stopReason === "length" && !result.error) {
+		result.error = formatIncompleteAssistantResponseError(result.stopReason);
 	}
 	if (result.error && result.exitCode === 0) {
 		result.exitCode = 1;
