@@ -4,7 +4,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, StopReason } from "@earendil-works/pi-ai";
 import type { AgentConfig } from "../agents/agents.ts";
 import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -1312,6 +1312,8 @@ export interface SingleResult {
 	/** Effective thinking level used by this foreground child, when known. */
 	thinking?: string;
 	requestedModel?: string;
+	/** Final assistant stop reason reported by the child runtime. */
+	stopReason?: StopReason;
 	controlEvents?: ControlEvent[];
 	error?: string;
 	/**
@@ -1396,6 +1398,7 @@ export interface WaitCompletionChild {
 	structuredOutputPath?: string;
 	error?: string;
 	model?: string;
+	stopReason?: StopReason;
 	contextOverflow?: boolean;
 	artifactPaths?: Partial<ArtifactPaths>;
 	timeoutRecovery?: TimeoutRecoveryProjection;
@@ -2038,6 +2041,7 @@ export interface AsyncStatus {
 		contextLimit?: number;
 		thinkingCeiling?: ThinkingLevel;
 		requestedModel?: string;
+		stopReason?: StopReason;
 		/** True when the child input exceeded the model context window. */
 		contextOverflow?: boolean;
 		totalCost?: CostSummary;
@@ -2165,6 +2169,7 @@ export interface ForegroundResumeChild {
 	exitCode?: number;
 	error?: string;
 	finalOutput?: string;
+	stopReason?: StopReason;
 	outputState?: SubagentOutputState;
 	/** True when the output is unfinished streamed text recovered after a timeout or child error. */
 	outputPartial?: boolean;
