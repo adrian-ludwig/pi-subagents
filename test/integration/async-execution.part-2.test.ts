@@ -937,7 +937,10 @@ syncBuiltinESMExports();
 				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 				artifactConfig: { enabled: false, cleanupDays: 7 }, shareEnabled: false, maxSubagentDepth: 2,
 			});
+			const waiting = await waitForAsyncState(id, status => status.steps.some(step => step.currentTool === "contact_supervisor"));
+			assert.deepEqual(waiting.pendingSupervisorWaits, ["0:id:a"]);
 			const payload = await readAsyncPayload(id);
+			assert.deepEqual(readStatus(path.join(ASYNC_DIR, id))?.pendingSupervisorWaits, []);
 			assert.equal(payload.state, "complete", JSON.stringify(payload));
 			assert.notEqual(payload.results[0]?.timedOut, true);
 		});
