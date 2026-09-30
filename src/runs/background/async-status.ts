@@ -77,6 +77,7 @@ interface AsyncRunStepSummary {
 	transcriptPath?: string;
 	error?: string;
 	timedOut?: boolean;
+	terminationReason?: AsyncStatus["terminationReason"];
 	stopped?: boolean;
 	turnBudget?: TurnBudgetState;
 	turnBudgetExceeded?: boolean;
@@ -122,6 +123,7 @@ export interface AsyncRunSummary {
 	timeoutMs?: number;
 	deadlineAt?: number;
 	timedOut?: boolean;
+	terminationReason?: AsyncStatus["terminationReason"];
 	stopped?: boolean;
 	turnBudget?: TurnBudgetState;
 	turnBudgetExceeded?: boolean;
@@ -404,6 +406,7 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 			...(step.transcriptPath ? { transcriptPath: step.transcriptPath } : {}),
 			...(step.error ? { error: step.error } : {}),
 			...(step.timedOut !== undefined ? { timedOut: step.timedOut } : {}),
+			...(step.terminationReason ? { terminationReason: step.terminationReason } : {}),
 			...(step.stopped !== undefined ? { stopped: step.stopped } : {}),
 			...(step.stopRequested !== undefined ? { stopRequested: step.stopRequested } : {}),
 			...(step.stopRequestedAt !== undefined ? { stopRequestedAt: step.stopRequestedAt } : {}),
@@ -453,6 +456,7 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 		...(status.timeoutMs !== undefined ? { timeoutMs: status.timeoutMs } : {}),
 		...(status.deadlineAt !== undefined ? { deadlineAt: status.deadlineAt } : {}),
 		...(status.timedOut !== undefined ? { timedOut: status.timedOut } : {}),
+		...(status.terminationReason ? { terminationReason: status.terminationReason } : {}),
 		...(status.pendingSupervisorWaits ? { pendingSupervisorWaits: status.pendingSupervisorWaits } : {}),
 		...(status.stopped !== undefined ? { stopped: status.stopped } : {}),
 		...(status.turnBudget ? { turnBudget: status.turnBudget } : {}),
