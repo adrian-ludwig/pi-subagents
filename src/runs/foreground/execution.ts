@@ -108,6 +108,7 @@ import {
 import { buildInProcessChildLaunch, createReportedChildSessionInput } from "../shared/child-launch.ts";
 import { childSessionFactory, childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent } from "../shared/child-session.ts";
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
+import { createActiveRuntimeTimeout, isBlockingSupervisorTool, isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -361,6 +362,7 @@ async function runSingleAttempt(
 		orcaProgressTab?: OrcaProgressTab;
 		launchWarnings: { emitted: boolean };
 		verifyModel: boolean;
+		activeTimeout?: ActiveRuntimeTimeout;
 	},
 ): Promise<SingleResult> {
 	const effectiveThinking = options.thinkingOverride ?? agent.thinking;
@@ -529,7 +531,10 @@ async function runSingleAttempt(
 		if (cacheWriteUsageComplete) progress.cacheWrite = result.usage.cacheWrite;
 		else delete progress.cacheWrite;
 	};
-	const attemptTimeout = resolveAttemptTimeout(options);
+	const resolvedTimeout = resolveAttemptTimeout(options);
+	const attemptTimeout = resolvedTimeout && shared.activeTimeout
+		? { ...resolvedTimeout, remainingMs: shared.activeTimeout.remainingMs() }
+		: resolvedTimeout;
 	if (attemptTimeout?.remainingMs === 0) {
 		result.exitCode = 1;
 		result.timedOut = true;
@@ -585,13 +590,10 @@ async function runSingleAttempt(
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
-		let timeoutTimer: NodeJS.Timeout | undefined;
+		const activeTimeout = shared.activeTimeout;
 		let timeoutHardFinishTimer: NodeJS.Timeout | undefined;
 		const clearTimeoutTimers = () => {
-			if (timeoutTimer) {
-				clearTimeout(timeoutTimer);
-				timeoutTimer = undefined;
-			}
+			activeTimeout?.stop();
 			if (timeoutHardFinishTimer) {
 				clearTimeout(timeoutHardFinishTimer);
 				timeoutHardFinishTimer = undefined;
@@ -764,6 +766,9 @@ async function runSingleAttempt(
 			clearFinalDrainTimers();
 			clearWatchdogTailTimer();
 			clearTimeoutTimers();
+			for (const active of activeToolCalls.values()) {
+				if (active.blocksSupervisor) activeTimeout?.setWaiting(active.key, false);
+			}
 			clearAllToolTimeouts();
 			if (activityTimer) {
 				clearInterval(activityTimer);
@@ -798,7 +803,7 @@ async function runSingleAttempt(
 
 		let activeLongRunningNotified = false;
 		let pendingToolResult: { tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined;
-		type ActiveToolCall = { attentionEmitted?: boolean; key: string; tool: string; args: string; startedAt: number; path?: string };
+		type ActiveToolCall = { attentionEmitted?: boolean; key: string; tool: string; args: string; startedAt: number; path?: string; blocksSupervisor: boolean };
 		let activeToolSequence = 0;
 		const activeToolCalls = new Map<string, ActiveToolCall>();
 		const activeToolKeysByName = new Map<string, string[]>();
@@ -825,9 +830,11 @@ async function runSingleAttempt(
 				tool: event.toolName,
 				args: extractToolArgsPreview(args),
 				startedAt: now,
+				blocksSupervisor: isBlockingSupervisorTool(event.toolName, args),
 				...(path !== undefined ? { path } : {}),
 			};
 			activeToolCalls.set(key, active);
+			if (active.blocksSupervisor) activeTimeout?.setWaiting(key, true);
 			const keys = activeToolKeysByName.get(active.tool) ?? [];
 			keys.push(key);
 			activeToolKeysByName.set(active.tool, keys);
@@ -838,6 +845,7 @@ async function runSingleAttempt(
 			const active = activeToolCalls.get(key);
 			if (!active) return undefined;
 			activeToolCalls.delete(key);
+			if (active.blocksSupervisor) activeTimeout?.setWaiting(key, false);
 			const keys = activeToolKeysByName.get(active.tool)?.filter((candidate) => candidate !== key) ?? [];
 			if (keys.length > 0) activeToolKeysByName.set(active.tool, keys);
 			else activeToolKeysByName.delete(active.tool);
@@ -1070,6 +1078,7 @@ async function runSingleAttempt(
 			}
 
 			if (evt.type === "tool_execution_end") {
+				if (evt.toolName === "contact_supervisor" && isSupervisorWaitTimeout(evt.result)) terminateForSupervisorWait();
 				clearActiveToolTimeout(evt);
 				const endedTool = removeActiveToolCall(evt);
 				if (endedTool) {
@@ -1145,6 +1154,7 @@ async function runSingleAttempt(
 			}
 
 			if (evt.type === "tool_result_end" && evt.message) {
+				if ((evt.message as { toolName?: string }).toolName === "contact_supervisor" && isSupervisorWaitTimeout(evt.message)) terminateForSupervisorWait();
 				const toolResultCompletion = {
 					toolCallId: (evt.message as { toolCallId?: unknown }).toolCallId ?? (evt as { toolCallId?: unknown }).toolCallId,
 					toolName: (evt.message as { toolName?: unknown }).toolName ?? (evt as { toolName?: unknown }).toolName,
@@ -1214,8 +1224,18 @@ async function runSingleAttempt(
 			activityTimer.unref?.();
 		}
 
+		const terminateForSupervisorWait = () => {
+			if (sessionSettled || lifecycleFinished || result.timedOut) return;
+			result.timedOut = true;
+			result.error = SUPERVISOR_WAIT_TIMEOUT_MESSAGE;
+			result.finalOutput = SUPERVISOR_WAIT_TIMEOUT_MESSAGE;
+			clearTimeoutTimers();
+			abortChild();
+			timeoutHardFinishTimer = setTimeout(() => settle(undefined, true), 4000);
+			timeoutHardFinishTimer.unref?.();
+		};
 		if (attemptTimeout) {
-			timeoutTimer = setTimeout(() => {
+			activeTimeout?.start(() => {
 				if (sessionSettled || lifecycleFinished || interruptedByControl) return;
 				result.timedOut = true;
 				clearAllToolTimeouts();
@@ -1231,8 +1251,7 @@ async function runSingleAttempt(
 					settle(undefined, true);
 				}, 4000);
 				timeoutHardFinishTimer.unref?.();
-			}, attemptTimeout.remainingMs);
-			timeoutTimer.unref?.();
+			});
 		}
 
 		let toolTimeoutSequence = 0;
@@ -1555,7 +1574,7 @@ async function runSingleAttempt(
 	}
 	result.outputState = fullOutput.trim() || result.structuredOutput !== undefined ? "present" : "absent";
 	if (result.timedOut) {
-		const timeoutMessage = formatTimeoutMessage(options.timeoutMs ?? 0);
+		const timeoutMessage = result.error === SUPERVISOR_WAIT_TIMEOUT_MESSAGE ? result.error : formatTimeoutMessage(options.timeoutMs ?? 0);
 		let requiredOutputMissing: boolean | undefined;
 		if (options.outputMode === "file-only" && options.outputPath) {
 			const outputChanged = hasSingleOutputChangedSinceSnapshot(options.outputPath, shared.outputSnapshot);
@@ -1856,6 +1875,7 @@ async function runSyncCompletionInner(
 
 	let detachedReason: string | undefined;
 	const logicalDeadline = options.deadlineAt ?? (options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs);
+	const activeTimeout = logicalDeadline === undefined ? undefined : createActiveRuntimeTimeout(logicalDeadline - Date.now());
 	const attemptOptions: RunSyncOptions = {
 		...options,
 		deadlineAt: logicalDeadline,
@@ -1910,6 +1930,7 @@ async function runSyncCompletionInner(
 			orcaProgressTab,
 			launchWarnings,
 			verifyModel,
+			activeTimeout,
 		});
 		lastResult = attemptResult;
 		sumUsage(aggregateUsage, attemptResult.usage);
@@ -1942,6 +1963,7 @@ async function runSyncCompletionInner(
 		}
 		break;
 	}
+	activeTimeout?.dispose();
 	if (!lastResult) throw new Error("Subagent did not produce a result.");
 	if (isContextOverflow(lastResult.error)) lastResult.contextOverflow = true;
 

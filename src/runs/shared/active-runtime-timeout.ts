@@ -1,3 +1,11 @@
+export const SUPERVISOR_WAIT_TIMEOUT_MESSAGE = "Timed out waiting on supervisor.";
+
+export function isSupervisorWaitTimeout(result: unknown): boolean {
+	if (!result || typeof result !== "object") return false;
+	const details = (result as { details?: unknown }).details;
+	return !!details && typeof details === "object" && (details as { supervisorWaitTimedOut?: unknown }).supervisorWaitTimedOut === true;
+}
+
 export function isBlockingSupervisorTool(toolName: string | undefined, args: unknown): boolean {
 	if (!args || typeof args !== "object" || Array.isArray(args)) return false;
 	const input = args as Record<string, unknown>;
