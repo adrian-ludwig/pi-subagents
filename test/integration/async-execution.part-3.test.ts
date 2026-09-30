@@ -1470,21 +1470,28 @@ export default function() {
 	});
 
 	it("binds retained async resume output claims to the new workflow destination", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
-		for (const output of [undefined, path.join(tempDir, "new-report.md"), "relative-report.md", false]) {
-			const original = path.join(tempDir, `original-${String(output === false)}-${path.basename(String(output))}.md`);
+		for (const { name, output } of [
+			{ name: "retained", output: undefined },
+			{ name: "absolute", output: path.join(tempDir, "new-report.md") },
+			{ name: "relative", output: "relative-report.md" },
+			{ name: "disabled", output: false },
+		]) {
+			const original = path.join(tempDir, `original-${name}.md`);
 			const executor = makeAsyncExecutor([makeAgent("worker")]);
 			mockPi.onCall({ output: "Original implementation report" });
 			const first = await executor.execute("retained-output", { agent: "worker", task: "Implement", async: true, acceptance: false, output: original }, new AbortController().signal, undefined, makeMinimalCtx(tempDir)) as AsyncExecutionResult;
 			assert.ok(first.details.asyncId);
 			assert.equal((await readAsyncPayload(first.details.asyncId)).success, true);
 			mockPi.onCall({ output: "Resumed complete report" });
-			const resumed = await executor.execute("resume-output-workflow", { async: true, mission: false, output: path.join(tempDir, "aggregate.md"), workflowScript: `return runs.run("resume", { resume: ${JSON.stringify(first.details.asyncId)}, task: "Continue", ${output === undefined ? "" : `output: ${JSON.stringify(output)},`} acceptance: false });` }, new AbortController().signal, undefined, makeMinimalCtx(tempDir)) as AsyncExecutionResult;
+			const resumeParams = { resume: first.details.asyncId, task: "Continue", output, acceptance: false };
+			const resumed = await executor.execute("resume-output-workflow", { async: true, mission: false, output: path.join(tempDir, "aggregate.md"), workflowScript: `return runs.run("resume", ${JSON.stringify(resumeParams)});` }, new AbortController().signal, undefined, makeMinimalCtx(tempDir)) as AsyncExecutionResult;
 			assert.ok(resumed.details.asyncId);
 			const payload = await readAsyncPayload(resumed.details.asyncId);
 			assert.equal(payload.success, true, payload.error);
 			assert.equal(fs.readFileSync(original, "utf-8"), output === undefined ? "Resumed complete report" : "Original implementation report");
 			if (output !== false) {
-				const expected = output === undefined ? original : path.isAbsolute(output) ? output : path.join(TEMP_ARTIFACTS_DIR, "outputs", resumed.details.asyncId, output);
+				let expected = original;
+				if (typeof output === "string") expected = path.isAbsolute(output) ? output : path.join(TEMP_ARTIFACTS_DIR, "outputs", resumed.details.asyncId, output);
 				assert.equal(fs.readFileSync(expected, "utf-8"), "Resumed complete report");
 				assert.match(payload.results[0]?.output ?? "", /Resumed complete report/);
 			}
