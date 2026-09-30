@@ -70,7 +70,6 @@ describe("scripted workflow runtime", () => {
 		await started.promise;
 		t.mock.timers.tick(1000);
 		assert.equal(aborted, false);
-		// Replaying the same identity must not require a second reply to unpause.
 		emitSupervisorWait(events, pending);
 		emitSupervisorWait(events, { ...pending, waiting: false });
 		t.mock.timers.tick(30);
