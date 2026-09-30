@@ -13,6 +13,8 @@ import {
 	resolveSupervisorChannelDir,
 } from "../../src/intercom/native-supervisor-channel.ts";
 import { SUPERVISOR_REPLY_ENTRY_TYPE, SUPERVISOR_REQUEST_MESSAGE_TYPE } from "../../src/intercom/supervisor-ui.ts";
+import { createEventBus } from "../support/helpers.ts";
+import { SUPERVISOR_WAIT_EVENT } from "../../src/runs/shared/active-runtime-timeout.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT, type SubagentState } from "../../src/shared/types.ts";
 
 const createdChannels: string[] = [];
@@ -97,6 +99,32 @@ afterEach(() => {
 });
 
 describe("native supervisor channel", () => {
+	it("publishes owned wait lifecycle transitions on reply, cancellation and disposal, not progress", async () => {
+		const owner = randomUUID();
+		const runId = randomUUID();
+		const requestId = writeRequest({ sessionId: owner, runId });
+		writeRequest({ sessionId: owner, runId, reason: "progress_update" });
+		writeRequest({ sessionId: "foreign", runId: randomUUID() });
+		const events = createEventBus();
+		const waits: Array<{ runId: string; waiting: boolean }> = [];
+		events.on(SUPERVISOR_WAIT_EVENT, (event) => waits.push(event as typeof waits[number]));
+		let tool: { execute: (id: string, params: unknown) => Promise<unknown> };
+		const channel = createNativeSupervisorChannel({ events, getAllTools: () => [], registerTool: (value: typeof tool) => { tool = value; }, sendMessage() {} } as never, makeState(owner, { sessionManager: { getSessionId: () => owner } }));
+		try {
+			channel.start();
+			assert.deepEqual(waits.map(event => event.waiting), [true]);
+			await tool!.execute("reply", { action: "reply", replyTo: requestId, message: "Proceed" });
+			const cancelled = writeRequest({ sessionId: owner, runId });
+			channel.hasPendingRequests();
+			fs.rmSync(requestFile(runId, cancelled));
+			channel.hasPendingRequests();
+			writeRequest({ sessionId: owner, runId });
+			channel.hasPendingRequests();
+		} finally { channel.dispose(); }
+		assert.deepEqual(waits.map(event => event.waiting), [true, false, true, false, true, false]);
+		assert.ok(waits.every(event => event.runId === runId));
+	});
+
 	for (const platform of ["darwin", "win32", "linux"] as const) {
 		it(`bounds coordinator polling to owned channels and stops when idle (${platform})`, async () => {
 			const owner = randomUUID();
@@ -609,6 +637,7 @@ describe("native supervisor channel", () => {
 			sendMessage: () => { log.push("send"); },
 			events: {
 				emit: (channel: string, payload: { requestId?: string; runId?: string; agent?: string; childIndex?: number }) => {
+					if (channel !== INTERCOM_DETACH_REQUEST_EVENT) return;
 					log.push("emit");
 					emitted.push({ channel, payload });
 				},
