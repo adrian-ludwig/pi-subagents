@@ -11,6 +11,7 @@ import { readStatus } from "../shared/utils.ts";
 import { inheritedSessionIds } from "../shared/session-succession.ts";
 import { ownsRun } from "../runs/shared/run-ownership.ts";
 import { writeAtomicJson, writePrivateAtomicJson } from "../shared/atomic-json.ts";
+import { SUPERVISOR_WAIT_TIMEOUT_MESSAGE } from "../runs/shared/active-runtime-timeout.ts";
 import { shouldUseNativeFsWatch } from "../shared/watch-strategy.ts";
 import { MODEL_ONLY_TOOL } from "../shared/extension-context.ts";
 import {
@@ -20,6 +21,8 @@ import {
 	type SupervisorReason,
 	type SupervisorReplyEntryData,
 } from "./supervisor-ui.ts";
+
+class SupervisorWaitTimeoutError extends Error {}
 
 const SUPERVISOR_CHANNEL_ROOT = path.join(TEMP_ROOT_DIR, "supervisor-channels");
 const REQUESTS_DIR = "requests";
@@ -204,7 +207,7 @@ async function waitForReply(channelDir: string, requestId: string, initialDeadli
 		await delay(250, signal);
 		deadline = extendedDeadline(request, deadline);
 	}
-	throw new Error("Timed out waiting for supervisor reply.");
+	throw new SupervisorWaitTimeoutError(SUPERVISOR_WAIT_TIMEOUT_MESSAGE);
 }
 
 async function sendSupervisorRequest(params: ContactSupervisorParams, metadata: ChildSupervisorMetadata, signal?: AbortSignal, toolCallId?: string): Promise<AgentToolResult<Record<string, unknown>>> {
@@ -261,6 +264,9 @@ async function sendSupervisorRequest(params: ContactSupervisorParams, metadata: 
 		};
 	} catch (error) {
 		removeRequestFile(requestPath(metadata.channelDir, requestId));
+		if (error instanceof SupervisorWaitTimeoutError) {
+			return { content: [{ type: "text", text: error.message }], details: { requestId, reason: params.reason, supervisorWaitTimedOut: true } };
+		}
 		throw error;
 	}
 }
