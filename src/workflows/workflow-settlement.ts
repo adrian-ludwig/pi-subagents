@@ -88,25 +88,36 @@ export function findWorkflowSettlementStep(status: AsyncStatus, childRunId: stri
 	return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+function workflowSettlementCause(status: AsyncStatus, interrupted = false): WorkflowTerminalResolution | undefined {
+	if (status.steps?.some((step) => step.status === "pending" || step.status === "running"
+		|| (step.status === "paused" && step.activityState === "needs_attention" && !step.terminationReason))) return undefined;
+	if (status.steps?.some((step: WorkflowStatusStep) => step.status === "failed" && !step.interrupted && !step.stopped)) return "failed-child";
+	if (interrupted || status.stopped || status.steps?.some((step: WorkflowStatusStep) => step.status === "stopped" || step.stopped || step.interrupted)) return "interrupted-child";
+	return "settled-awaiting-resume";
+}
+
 export function promoteSettledPausedWorkflow(status: AsyncStatus, now = Date.now()): AsyncStatus | undefined {
-	if (status.mode !== "workflow" || status.state !== "paused") return undefined;
+	if (status.mode !== "workflow" || status.state !== "paused" || !status.steps?.length) return undefined;
+	const cause = workflowSettlementCause(status);
+	const expiredChild = status.steps.find(step => step.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON);
 	const next = cloneWorkflowStatus(status);
-	const failed = next.steps?.some(candidate => candidate.status === "failed") === true;
-	if (status.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON && !failed) return undefined;
-	const stillOpen = next.steps?.some((candidate) =>
-		candidate.status === "running"
-		|| (candidate.status === "paused" && candidate.activityState === "needs_attention" && !candidate.terminationReason)
-	) === true;
-	if (stillOpen || !next.steps?.length) return undefined;
-	if (next.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON) {
+	if (cause === "settled-awaiting-resume" && expiredChild) {
+		if (status.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON) return undefined;
+		next.terminationReason = SUPERVISOR_WAIT_TIMEOUT_REASON;
+		next.timedOut = true;
+		next.activityState = "needs_attention";
+		next.error = expiredChild.error;
+		next.endedAt = now;
+	} else {
 		delete next.terminationReason;
-		delete next.timedOut;
+		if (status.terminationReason) delete next.timedOut;
+		if (!cause) return status.terminationReason ? withWorkflowChildren(next) : undefined;
+		next.state = "failed";
+		next.endedAt = now;
+		delete next.activityState;
+		if (!status.steps.some(step => step.status === "failed")) next.error = UNSUPPORTED_DETACHED_WORKFLOW_CONTINUATION;
 	}
 	next.lastUpdate = now;
-	next.state = "failed";
-	next.endedAt = now;
-	delete next.activityState;
-	if (!failed) next.error = UNSUPPORTED_DETACHED_WORKFLOW_CONTINUATION;
 	return withWorkflowChildren(next);
 }
 
@@ -126,7 +137,7 @@ export function applyDetachedChildSettlement(
 	})?.error;
 	const interruptedChildError = next.steps?.find((candidate) => {
 		const candidateStep = candidate as WorkflowStatusStep;
-		return candidateStep.status === "failed" && candidateStep.interrupted && candidateStep.error;
+		return (candidateStep.status === "stopped" || candidateStep.stopped || (candidateStep.status === "failed" && candidateStep.interrupted)) && candidateStep.error;
 	})?.error;
 	const now = input.now ?? Date.now();
 	const supervisorWaitExpired = !input.result.stopped && !input.result.interrupted && input.result.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON;
@@ -142,11 +153,6 @@ export function applyDetachedChildSettlement(
 		step.timedOut = true;
 		step.activityState = "needs_attention";
 		step.error = input.result.error;
-		next.terminationReason = input.result.terminationReason;
-		next.timedOut = true;
-		next.activityState = "needs_attention";
-		next.error = input.result.error;
-		next.endedAt = now;
 	} else if (succeeded) {
 		delete step.error;
 		delete step.interrupted;
@@ -163,23 +169,16 @@ export function applyDetachedChildSettlement(
 	const promoted = promoteSettledPausedWorkflow(next, now);
 	if (promoted?.state === "failed" && failedSiblingError) promoted.error = failedSiblingError;
 	else if (promoted?.state === "failed" && (input.result.interrupted || input.result.stopped)) promoted.error = input.result.error ?? INTERRUPTED_DETACHED_CHILD;
+	else if (promoted?.state === "failed" && input.result.terminationReason && interruptedChildError) promoted.error = interruptedChildError;
 	else if (promoted?.state === "failed" && input.result.error) promoted.error = input.result.error;
 	else if (promoted?.state === "failed" && interruptedChildError) promoted.error = interruptedChildError;
 	return withWorkflowChildren(promoted ?? next);
 }
 
 export function classifyWorkflowSettlement(status: AsyncStatus, interrupted = false): WorkflowTerminalResolution | undefined {
-	if (status.state === "paused" && status.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON) return "settled-awaiting-resume";
-	if (status.state !== "complete" && status.state !== "failed") return undefined;
-	if (status.steps?.some((step) => {
-		const candidate = step as WorkflowStatusStep;
-		return candidate.status === "failed" && !candidate.interrupted;
-	})) return "failed-child";
-	if (interrupted || status.steps?.some((step) => {
-		const candidate = step as WorkflowStatusStep;
-		return candidate.status === "stopped" || candidate.stopped || candidate.interrupted || candidate.error === INTERRUPTED_DETACHED_CHILD;
-	})) return "interrupted-child";
-	return "settled-awaiting-resume";
+	if (status.state !== "complete" && status.state !== "failed"
+		&& !(status.state === "paused" && status.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON)) return undefined;
+	return workflowSettlementCause(status, interrupted);
 }
 
 export function workflowRecoveryActions(receipt: WorkflowReceipt | undefined): WorkflowRecoveryAction[] {
