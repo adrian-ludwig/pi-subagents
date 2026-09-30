@@ -9,7 +9,7 @@ export function emitSupervisorWait(events: IntercomEventBus, event: SupervisorWa
 	let pending = pendingWaits.get(events);
 	if (!pending) { pending = new Map(); pendingWaits.set(events, pending); }
 	const key = JSON.stringify([event.runId, event.key]);
-	if (event.waiting) pending.set(key, { ...event });
+	if (event.waiting) pending.set(key, { runId: event.runId, key: event.key, waiting: true });
 	else pending.delete(key);
 	events.emit(SUPERVISOR_WAIT_EVENT, event);
 }
@@ -18,6 +18,26 @@ export function emitSupervisorWait(events: IntercomEventBus, event: SupervisorWa
 export function supervisorWaitSnapshot(events: IntercomEventBus): SupervisorWaitEvent[] {
 	return [...(pendingWaits.get(events)?.values() ?? [])].map(event => ({ ...event }));
 }
+export function clearSupervisorWaits(events: IntercomEventBus, runId: string): void {
+	for (const event of supervisorWaitSnapshot(events)) {
+		if (event.runId === runId) emitSupervisorWait(events, { ...event, waiting: false });
+	}
+}
+
+export function restoreSupervisorWaits(events: IntercomEventBus, runId: string, keys: unknown): void {
+	if (!Array.isArray(keys)) return;
+	const restored = new Set(keys.filter((key): key is string => typeof key === "string" && key.length > 0));
+	const current = new Set<string>();
+	for (const event of supervisorWaitSnapshot(events)) {
+		if (event.runId !== runId) continue;
+		current.add(event.key);
+		if (!restored.has(event.key)) emitSupervisorWait(events, { ...event, waiting: false });
+	}
+	for (const key of restored) {
+		if (!current.has(key)) emitSupervisorWait(events, { runId, key, waiting: true });
+	}
+}
+
 export function isSupervisorWaitEvent(value: unknown): value is SupervisorWaitEvent {
 	if (!value || typeof value !== "object") return false;
 	const event = value as Partial<SupervisorWaitEvent>;
