@@ -44,6 +44,7 @@ export interface SubagentNotifyDetails {
 	asyncDir?: string;
 	agent: string;
 	status: "completed" | "failed" | "paused" | "stopped";
+	terminationReason?: import("../../shared/types.ts").SubagentTerminationReason;
 	source?: "async" | "foreground";
 	taskInfo?: string;
 	resultPreview: string;
@@ -85,6 +86,7 @@ export interface CompletionNotification {
 	processSignal?: string | null;
 	interrupted?: boolean;
 	timedOut?: boolean;
+	terminationReason?: import("../../shared/types.ts").SubagentTerminationReason;
 	stopped?: boolean;
 	turnBudgetExceeded?: boolean;
 	results?: Array<{
@@ -107,6 +109,7 @@ export interface CompletionNotification {
 		processSignal?: string | null;
 		interrupted?: boolean;
 		timedOut?: boolean;
+		terminationReason?: import("../../shared/types.ts").SubagentTerminationReason;
 		stopped?: boolean;
 		turnBudgetExceeded?: boolean;
 		watchdog?: ChildWatchdogProgress;
@@ -211,6 +214,7 @@ function formatRetainedPathError(label: string, error: RetainedPathError): strin
 }
 
 function childStatus(child: CompletionChild, workflowState?: string): string {
+	if (child.terminationReason) return "paused";
 	const knownStatus = child.status === "complete"
 		? "completed"
 		: child.status === "running" || child.status === "completed" || child.status === "failed" || child.status === "paused" || child.status === "stopped" || child.status === "detached"
@@ -601,6 +605,7 @@ function sendCompletion(pi: Pick<ExtensionAPI, "sendMessage">, items: PendingCom
 				customType: "subagent-notify",
 				content,
 				display,
+				...(details.some(detail => detail.terminationReason) ? { details: { completions: details } } : {}),
 			},
 			{ triggerTurn: items.some((item) => item.triggerTurn) },
 		);
@@ -627,7 +632,8 @@ export function buildCompletionDetails(result: CompletionNotification): Subagent
 			|| child.status === "stopped"
 			|| (child.success !== true && child.exitCode !== 0 && isUnexplainedProcessSignal(child))) === true;
 	const paused = !stopped && !result.success && (
-		result.exitCode === 0
+		result.terminationReason === "timed-out-waiting-on-supervisor"
+		|| result.exitCode === 0
 		|| result.state === "paused"
 		|| result.interrupted === true
 		|| summary.startsWith("Paused after interrupt.")
@@ -735,6 +741,7 @@ export function buildCompletionDetails(result: CompletionNotification): Subagent
 	return {
 		agent,
 		status,
+		...(result.terminationReason ? { terminationReason: result.terminationReason } : {}),
 		...(scheduleOrigin ? { scheduleOrigin } : {}),
 		...(workflowReceiptPath ? { workflowReceiptPath } : {}),
 		...(asyncDir ? { asyncDir } : {}),

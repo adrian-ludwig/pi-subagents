@@ -22,6 +22,24 @@ import { createResultDeliveryOwnership } from "../../src/runs/background/result-
 
 const COMPLETION_OWNER_ID = "completion-owner-a";
 
+it("delivers supervisor expiry as paused with structured completion metadata", () => {
+	const terminationReason = "timed-out-waiting-on-supervisor" as const;
+	const result = { id: "expired", agent: "worker", mode: "workflow", state: "failed", success: false, exitCode: 1, timedOut: true, terminationReason, summary: "not timeout prose", sessionId: "session-1", completionOwnerId: COMPLETION_OWNER_ID, results: [{ agent: "worker", status: "failed", success: false, terminationReason }] };
+	const details = buildCompletionDetails(result);
+	assert.equal(details.status, "paused");
+	assert.equal(details.terminationReason, terminationReason);
+	assert.equal(details.childOutputs?.[0]?.status, "paused");
+	assert.equal(buildCompletionDetails({ ...result, results: [], terminationReason: undefined }).status, "failed");
+	const { events, sent, dispose } = createPi();
+	try {
+		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, result);
+		assert.equal(sent.length, 1);
+		const message = sent[0]!.message as { details: { completions: SubagentNotifyDetails[] } };
+		assert.equal(message.details.completions[0]?.status, "paused");
+		assert.equal(message.details.completions[0]?.terminationReason, terminationReason);
+	} finally { dispose(); }
+});
+
 it("does not deliver awaited workflow child lifecycle completions", async () => {
 	const { events, sent, dispose } = createPi();
 	try {

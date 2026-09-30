@@ -1097,8 +1097,9 @@ export interface WorkflowScriptChildResult {
 	key: string;
 	/** True only for successfully completed child work, never for a launch receipt. */
 	ok: boolean;
-	/** An explicit async launch returned before a final child result was available. */
-	state?: "running";
+	/** Running marks a launch receipt; paused marks terminal supervisor expiry. */
+	state?: "running" | "paused";
+	terminationReason?: import("../shared/types.ts").SubagentTerminationReason;
 	asyncDir?: string;
 	lane?: import("../shared/types.ts").WorkflowLaneMetadata;
 	terminalOutcome?: import("../shared/types.ts").WorkflowTerminalOutcome;
@@ -1131,7 +1132,8 @@ export interface WorkflowScriptChildResult {
 export interface WorkflowScriptTraceEntry {
 	operation: "run" | "status" | "steer" | "host";
 	key: string;
-	state: "started" | "completed" | "failed" | "detached" | "stopped" | "reused" | "queued" | "delivered" | "missed";
+	state: "started" | "completed" | "failed" | "paused" | "detached" | "stopped" | "reused" | "queued" | "delivered" | "missed";
+	terminationReason?: import("../shared/types.ts").SubagentTerminationReason;
 	/** Canonical child agent name when resolved launch or result data is available. */
 	agent?: string;
 	runId?: string;
@@ -2225,7 +2227,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 			? "completed"
 			: result.stopped
 				? "stopped"
-				: result.detached
+				: result.detached || result.terminationReason
 					? "paused"
 					: "failed";
 		const outputReference = result.outputReference ?? result.outputArtifactPath;
@@ -2706,8 +2708,8 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 				if (stoppedLaunches.has(key)) return children.get(key) ?? normalized;
 				children.set(key, normalized);
 				recordAcceptanceRecoveryBarrier(key, normalized);
-				const state = normalized.state === "running" ? "started" : normalized.ok ? "completed" : normalized.stopped ? "stopped" : normalized.detached ? "detached" : "failed";
-				const settledEntry: WorkflowScriptTraceEntry = { operation: "run", key, state, durationMs: Date.now() - startedAt, ...workflowStringMetadata(params), ...(generatedLaneKey ? { generatedLaneKey } : {}), ...(normalized.agent ? { agent: normalized.agent } : {}), ...(normalized.runId ? { runId: normalized.runId } : {}), ...(!normalized.ok && normalized.state !== "running" ? { error: normalized.error ?? normalized.output } : {}) };
+				const state = normalized.state === "running" ? "started" : normalized.ok ? "completed" : normalized.stopped ? "stopped" : normalized.terminationReason ? "paused" : normalized.detached ? "detached" : "failed";
+				const settledEntry: WorkflowScriptTraceEntry = { operation: "run", key, state, ...(normalized.terminationReason ? { terminationReason: normalized.terminationReason } : {}), durationMs: Date.now() - startedAt, ...workflowStringMetadata(params), ...(generatedLaneKey ? { generatedLaneKey } : {}), ...(normalized.agent ? { agent: normalized.agent } : {}), ...(normalized.runId ? { runId: normalized.runId } : {}), ...(!normalized.ok && normalized.state !== "running" ? { error: normalized.error ?? normalized.output } : {}) };
 				if (normalized.reused) settledEntry.reused = true;
 				trace.push(settledEntry);
 				traceChanged();

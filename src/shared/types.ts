@@ -136,10 +136,9 @@ export type WorkflowScriptFailureKind = "validation" | "script" | "child" | "ret
 
 export type WorkflowTerminalResolution = "settled-awaiting-resume" | "failed-child" | "interrupted-child";
 
-export interface WorkflowTerminalOutcome {
-	state: "partial";
-	reason: "budget_exhausted" | "timeout";
-}
+export type WorkflowTerminalOutcome =
+	| { state: "partial"; reason: "budget_exhausted" | "timeout" }
+	| { state: "paused"; reason: SubagentTerminationReason };
 
 export interface WorkflowRecoveryAction {
 	key: string;
@@ -548,6 +547,7 @@ export interface ExecutionProjection {
 	error?: string;
 	interrupted?: boolean;
 	timedOut?: boolean;
+	terminationReason?: SubagentTerminationReason;
 	stopped?: boolean;
 	detached?: boolean;
 }
@@ -905,6 +905,7 @@ export type PublicNestedRunSummary = Pick<
 };
 
 export interface SubagentResultIntercomChild {
+	terminationReason?: SubagentTerminationReason;
 	agent: string;
 	/** Human-readable display name for the child session, when derived at launch. */
 	sessionName?: string;
@@ -921,6 +922,7 @@ export interface SubagentResultIntercomChild {
 }
 
 export interface SubagentResultIntercomPayload {
+	terminationReason?: SubagentTerminationReason;
 	to: string;
 	message: string;
 	requestId?: string;
@@ -1265,6 +1267,8 @@ export interface UsageBudgetState {
 	reason?: "tokens" | "costUsd";
 }
 
+export type SubagentTerminationReason = "timed-out-waiting-on-supervisor";
+
 export interface SingleResult {
 	/**
 	 * Stable child identity within the foreground run. Pair with Details.runId for
@@ -1289,6 +1293,7 @@ export interface SingleResult {
 	detachedReason?: string;
 	interrupted?: boolean;
 	timedOut?: boolean;
+	terminationReason?: SubagentTerminationReason;
 	stopped?: boolean;
 	turnBudget?: TurnBudgetState;
 	turnBudgetExceeded?: boolean;
@@ -1432,6 +1437,10 @@ export interface AgentCapabilityRow {
 
 export interface Details {
 	mode: SubagentResultMode | "management";
+	state?: "paused";
+	activityState?: ActivityState;
+	success?: false;
+	terminationReason?: SubagentTerminationReason;
 	workflowReceiptPath?: string;
 	runId?: string;
 	/** Host tool-call id retained when it differs from the internal run id. */
@@ -1534,7 +1543,8 @@ export interface Details {
 		trace: Array<{
 			operation: "run" | "status" | "steer" | "host";
 			key: string;
-			state: "started" | "completed" | "failed" | "detached" | "stopped" | "reused" | "queued" | "delivered" | "missed";
+			state: "started" | "completed" | "failed" | "paused" | "detached" | "stopped" | "reused" | "queued" | "delivered" | "missed";
+			terminationReason?: SubagentTerminationReason;
 			agent?: string;
 			runId?: string;
 			phase?: string;
@@ -1912,6 +1922,7 @@ export interface AsyncStatus {
 	timeoutMs?: number;
 	deadlineAt?: number;
 	timedOut?: boolean;
+	terminationReason?: SubagentTerminationReason;
 	stopped?: boolean;
 	turnBudget?: TurnBudgetState;
 	turnBudgetExceeded?: boolean;
@@ -2004,6 +2015,7 @@ export interface AsyncStatus {
 		durationMs?: number;
 		exitCode?: number | null;
 		timedOut?: boolean;
+		terminationReason?: SubagentTerminationReason;
 		timeoutRecovery?: TimeoutRecoverySummary;
 		stopped?: boolean;
 		turnBudget?: TurnBudgetState;
@@ -2101,6 +2113,7 @@ export interface AsyncJobState {
 	timeoutMs?: number;
 	deadlineAt?: number;
 	timedOut?: boolean;
+	terminationReason?: SubagentTerminationReason;
 	stopped?: boolean;
 	turnBudget?: TurnBudgetState;
 	turnBudgetExceeded?: boolean;
@@ -2124,6 +2137,8 @@ export interface AsyncJobState {
 }
 
 export interface ForegroundResumeChild {
+	terminationReason?: SubagentTerminationReason;
+	timedOut?: boolean;
 	agent: string;
 	/** Human-readable display name for the child session, when derived at launch. */
 	sessionName?: string;

@@ -107,7 +107,7 @@ import {
 import { buildInProcessChildLaunch, createReportedChildSessionInput } from "../shared/child-launch.ts";
 import { childSessionFactory, childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent } from "../shared/child-session.ts";
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
-import { createActiveRuntimeTimeout, emitSupervisorWait, isBlockingSupervisorTool, isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
+import { createActiveRuntimeTimeout, emitSupervisorWait, isBlockingSupervisorTool, isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, SUPERVISOR_WAIT_TIMEOUT_REASON, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -1220,6 +1220,7 @@ async function runSingleAttempt(
 		const terminateForSupervisorWait = () => {
 			if (sessionSettled || lifecycleFinished || result.timedOut) return;
 			result.timedOut = true;
+			result.terminationReason = SUPERVISOR_WAIT_TIMEOUT_REASON;
 			result.error = SUPERVISOR_WAIT_TIMEOUT_MESSAGE;
 			result.finalOutput = SUPERVISOR_WAIT_TIMEOUT_MESSAGE;
 			clearTimeoutTimers();
@@ -1550,7 +1551,7 @@ async function runSingleAttempt(
 	if (!fullOutput.trim() && result.structuredOutput !== undefined) fullOutput = JSON.stringify(result.structuredOutput, null, 2);
 	result.outputState = fullOutput.trim() || result.structuredOutput !== undefined ? "present" : "absent";
 	if (result.timedOut) {
-		const timeoutMessage = result.error === SUPERVISOR_WAIT_TIMEOUT_MESSAGE ? result.error : formatTimeoutMessage(options.timeoutMs ?? 0);
+		const timeoutMessage = result.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON ? SUPERVISOR_WAIT_TIMEOUT_MESSAGE : formatTimeoutMessage(options.timeoutMs ?? 0);
 		let requiredOutputMissing: boolean | undefined;
 		if (options.outputMode === "file-only" && options.outputPath) {
 			const outputChanged = hasSingleOutputChangedSinceSnapshot(options.outputPath, shared.outputSnapshot);
@@ -2095,7 +2096,7 @@ async function runSyncCompletion(
 			...options,
 			onOrcaProgressTabCreated: (tab) => { orcaProgressTab = tab; },
 		});
-		orcaProgressTab?.finish(result.stopped ? "stopped" : result.exitCode === 0 && !result.error ? "completed" : "failed", result.sessionFile);
+		orcaProgressTab?.finish(result.stopped ? "stopped" : result.terminationReason ? "paused" : result.exitCode === 0 && !result.error ? "completed" : "failed", result.sessionFile);
 		return result;
 	} catch (error) {
 		orcaProgressTab?.finish("failed");
