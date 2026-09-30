@@ -11,7 +11,7 @@ import { readStatus } from "../shared/utils.ts";
 import { inheritedSessionIds } from "../shared/session-succession.ts";
 import { ownsRun } from "../runs/shared/run-ownership.ts";
 import { writeAtomicJson, writePrivateAtomicJson } from "../shared/atomic-json.ts";
-import { emitSupervisorWait, SUPERVISOR_WAIT_TIMEOUT_MESSAGE } from "../runs/shared/active-runtime-timeout.ts";
+import { emitSupervisorWait, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, SUPERVISOR_WAIT_TIMEOUT_REASON } from "../runs/shared/active-runtime-timeout.ts";
 import { shouldUseNativeFsWatch } from "../shared/watch-strategy.ts";
 import { MODEL_ONLY_TOOL } from "../shared/extension-context.ts";
 import {
@@ -265,7 +265,7 @@ async function sendSupervisorRequest(params: ContactSupervisorParams, metadata: 
 	} catch (error) {
 		removeRequestFile(requestPath(metadata.channelDir, requestId));
 		if (error instanceof SupervisorWaitTimeoutError) {
-			return { content: [{ type: "text", text: error.message }], details: { requestId, reason: params.reason, supervisorWaitTimedOut: true } };
+			return { content: [{ type: "text", text: error.message }], details: { requestId, reason: params.reason, terminationReason: SUPERVISOR_WAIT_TIMEOUT_REASON } };
 		}
 		throw error;
 	}

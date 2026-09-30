@@ -112,7 +112,7 @@ import { childSessionFactory, childSessionHasQueuedMessages, projectChildSession
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
 import { clearProviderRetry, observeProviderDiagnostics, snapshotProviderDiagnostics } from "../../shared/provider-diagnostics.ts";
 import { isRexLocalMachine } from "../shared/rex-machine.ts";
-import { createActiveRuntimeTimeout, emitSupervisorWait, isBlockingSupervisorTool, isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
+import { createActiveRuntimeTimeout, emitSupervisorWait, isBlockingSupervisorTool, isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, SUPERVISOR_WAIT_TIMEOUT_REASON, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -1271,6 +1271,7 @@ async function runSingleAttempt(
 			if (sessionSettled || lifecycleFinished || result.timedOut) return;
 			result.timedOut = true;
 			timeoutCause = SUPERVISOR_WAIT_TIMEOUT_MESSAGE;
+			result.terminationReason = SUPERVISOR_WAIT_TIMEOUT_REASON;
 			result.error = SUPERVISOR_WAIT_TIMEOUT_MESSAGE;
 			result.finalOutput = SUPERVISOR_WAIT_TIMEOUT_MESSAGE;
 			clearTimeoutTimers();
@@ -2207,7 +2208,7 @@ async function runSyncCompletion(
 			...options,
 			onOrcaProgressTabCreated: (tab) => { orcaProgressTab = tab; },
 		});
-		orcaProgressTab?.finish(result.stopped ? "stopped" : result.exitCode === 0 && !result.error ? "completed" : "failed", result.sessionFile);
+		orcaProgressTab?.finish(result.stopped ? "stopped" : result.terminationReason ? "paused" : result.exitCode === 0 && !result.error ? "completed" : "failed", result.sessionFile);
 		return result;
 	} catch (error) {
 		orcaProgressTab?.finish("failed");
