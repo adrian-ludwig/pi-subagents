@@ -58,12 +58,11 @@ function workflowResultChildren(status: AsyncStatus, childRunId: string, result:
 			if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
 			const child = entry as Record<string, unknown>;
 			if (child.runId !== childRunId) return child;
-			return {
+			const settled: Record<string, unknown> = {
 				...child,
 				success: result.exitCode === 0 && !result.error && !result.interrupted,
 				output,
 				outputState: output.trim() ? "present" : "absent",
-				detached: undefined,
 				...(result.terminationReason ? { terminationReason: result.terminationReason, timedOut: true, state: "paused" } : {}),
 				...(usage ? { usage } : {}),
 				...(outputReference ? { outputReference } : {}),
@@ -75,6 +74,8 @@ function workflowResultChildren(status: AsyncStatus, childRunId: string, result:
 				...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
 				...(result.error ? { error: result.error } : {}),
 			};
+			delete settled.detached;
+			return settled;
 		});
 	}
 	return status.steps?.map((step: WorkflowStatusStep) => ({
