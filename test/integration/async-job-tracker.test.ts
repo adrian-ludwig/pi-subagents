@@ -11,6 +11,7 @@ import { createNativeSupervisorChannel, ensureSupervisorChannelDir, resolveSuper
 import { SubagentFleetComponent } from "../../src/tui/fleet.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import { resolveSubagentRunId } from "../../src/runs/background/run-id-resolver.ts";
+import { SUPERVISOR_WAIT_EVENT } from "../../src/runs/shared/active-runtime-timeout.ts";
 import { createTempDir, removeTempDir, tryImport } from "../support/helpers.ts";
 
 interface AsyncJobTrackerModule {
@@ -239,6 +240,23 @@ function createUiContext() {
 }
 
 describe("async job tracker", { skip: !available ? "pi packages not available" : undefined }, () => {
+	it("forwards wait transitions only for the tracked run, independently of control notices", (t) => {
+		t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: Date.now() });
+		const root = createTempDir("pi-supervisor-wait-events-");
+		const runDir = path.join(root, "own");
+		fs.mkdirSync(runDir);
+		fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({ id: "own", state: "running", pid: process.pid, lastUpdate: Date.now(), steps: [{ agent: "worker", status: "running" }] }));
+		const own = { type: SUPERVISOR_WAIT_EVENT, runId: "own", key: "0:id:ask", waiting: true };
+		fs.writeFileSync(path.join(runDir, "events.jsonl"), [own, { ...own, runId: "foreign" }, { ...own, waiting: "invalid" }, { ...own, waiting: false }].map(event => JSON.stringify(event)).join("\n") + "\n");
+		const recorder = createEventRecorder();
+		const tracker = createTracker(recorder.pi, createState(), root, { watch: (() => { throw new Error("watch disabled"); }) as never });
+		try {
+			tracker.handleStarted({ id: "own", asyncDir: runDir, agent: "worker" });
+			t.mock.timers.tick(25);
+			assert.deepEqual(recorder.events.filter(event => event.channel === SUPERVISOR_WAIT_EVENT).map(event => event.data), [own, { ...own, waiting: false }]);
+		} finally { tracker.resetJobs(); removeTempDir(root); }
+	});
+
 	it("drops stale captured extension contexts instead of crashing background timers", () => {
 		const asyncRoot = createTempDir("pi-async-job-tracker-stale-context-");
 		try {

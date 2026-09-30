@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import type { Message, StopReason } from "@earendil-works/pi-ai";
 import { installRunnerHttpDispatcher } from "./runner-http-dispatcher.ts";
-import { createActiveRuntimeTimeout, createSupervisorWaitTracker, isBlockingSupervisorTool, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
+import { createActiveRuntimeTimeout, createSupervisorWaitTracker, isBlockingSupervisorTool, SUPERVISOR_WAIT_EVENT, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { writeAsyncResultFile, writePendingAsyncResultFile } from "./result-files.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
@@ -2966,6 +2966,7 @@ export async function runSubagent(
 		const ownedKey = `${index}:${key}`;
 		runTimeout?.setWaiting(ownedKey, waiting);
 		checkpointTimeout?.setWaiting(ownedKey, waiting);
+		appendJsonl(eventsPath, JSON.stringify({ type: SUPERVISOR_WAIT_EVENT, runId: id, key: ownedKey, waiting }));
 	};
 	const updateStepFromChildEvent = (flatIndex: number, event: ChildEvent): void => {
 		const step = statusPayload.steps[flatIndex];

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { renderWidget, widgetRenderKey } from "../../tui/render.ts";
 import { formatControlNoticeMessage } from "../shared/subagent-control.ts";
+import { SUPERVISOR_WAIT_EVENT, emitSupervisorWait, isSupervisorWaitEvent } from "../shared/active-runtime-timeout.ts";
 import {
 	type AsyncJobState,
 	type AsyncStartedEvent,
@@ -335,6 +336,10 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 						}
 					}
 					pi.events.emit(SUBAGENT_STEERING_NOTICE_EVENT, { ...notice, source: "async", asyncDir: job.asyncDir, noticeText: notice.message });
+					return;
+				}
+				if ((parsed as { type?: unknown }).type === SUPERVISOR_WAIT_EVENT) {
+					if (isSupervisorWaitEvent(parsed) && parsed.runId === job.asyncId) emitSupervisorWait(pi.events, parsed);
 					return;
 				}
 				if ((parsed as { type?: unknown }).type !== "subagent.control") return;
