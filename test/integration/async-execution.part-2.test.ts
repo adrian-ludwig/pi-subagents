@@ -920,6 +920,47 @@ syncBuiltinESMExports();
 		}
 	});
 
+	for (const budget of ["aggregate", "step"] as const) {
+		it(`pauses the async ${budget} budget through repeated supervisor waits`, async () => {
+			mockPi.onCall({ steps: [
+				{ delay: 50, jsonl: [{ ...events.toolStart("contact_supervisor", { reason: "need_decision", message: "Question" }), toolCallId: "a" }] },
+				{ delay: 2500, jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "a" }] },
+				{ delay: 50, jsonl: [{ ...events.toolStart("contact_supervisor", { reason: "interview_request" }), toolCallId: "b" }] },
+				{ delay: 2500, jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "b" }] },
+				{ delay: 50, jsonl: [events.assistantMessage("Done")] },
+			] });
+			const id = `async-paused-${budget}-${Date.now().toString(36)}`;
+			executeAsyncChain(id, {
+				chain: [{ agent: "worker", task: "Ask", acceptance: false }],
+				agents: [makeAgent("worker", budget === "step" ? { defaultTimeoutMs: 800 } : {})],
+				...(budget === "aggregate" ? { timeoutMs: 2000 } : {}),
+				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+				artifactConfig: { enabled: false, cleanupDays: 7 }, shareEnabled: false, maxSubagentDepth: 2,
+			});
+			const payload = await readAsyncPayload(id);
+			assert.equal(payload.state, "complete", JSON.stringify(payload));
+			assert.notEqual(payload.results[0]?.timedOut, true);
+		});
+	}
+
+	it("preserves async supervisor-wait expiry and admits the retained session for resume", async () => {
+		mockPi.onCall({ steps: [
+			{ jsonl: [{ ...events.toolStart("contact_supervisor", { reason: "need_decision", message: "Question" }), toolCallId: "expired" }] },
+			{ jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "expired", result: { content: [{ type: "text", text: "Timed out waiting on supervisor." }], details: { supervisorWaitTimedOut: true } } }] },
+			{ delay: 10000 },
+		] });
+		const id = `async-supervisor-expiry-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, { agent: "worker", task: "Ask", agentConfig: makeAgent("worker"), ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" }, artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 }, shareEnabled: false, sessionFile: path.join(tempDir, "sessions", "expired.jsonl"), maxSubagentDepth: 2 });
+		const payload = await readAsyncPayload(id);
+		assert.equal(payload.results[0]?.timedOut, true);
+		assert.equal(payload.results[0]?.error, "Timed out waiting on supervisor.");
+		assert.ok(payload.results[0]?.sessionFile);
+		const { resolveAsyncResumeTarget } = await import("../../src/runs/background/async-resume.ts");
+		const target = resolveAsyncResumeTarget({ id });
+		assert.equal(target.kind, "revive");
+		assert.equal(target.sessionFile, payload.results[0]?.sessionFile);
+	});
+
 	it("enforces child timeouts on async parallel tasks without a composite deadline", { skip: !isAsyncAvailable() ? "jiti not available" : process.platform === "win32" ? "timeout signal delivery intermittent on Windows CI" : undefined }, async () => {
 		mockPi.onCall({ delay: 5_000, output: "one too late" });
 		mockPi.onCall({ delay: 5_000, output: "two too late" });

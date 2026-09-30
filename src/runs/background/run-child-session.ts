@@ -26,6 +26,7 @@ import { effectiveToolTimeoutMs, formatToolTimeoutMessage, toolTimeoutCallKey } 
 import { createReportedChildSessionInput, type InProcessChildLaunch } from "../shared/child-launch.ts";
 import { childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../shared/child-session.ts";
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
+import { isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE } from "../shared/active-runtime-timeout.ts";
 import { formatSteerMessage } from "../shared/subagent-prompt-runtime.ts";
 import type { SteerDeliveryStatus, SteerRequest } from "./control-channel.ts";
 import { takeMatchingAcceptedSteer, unconsumedSteerReason } from "./steering.ts";
@@ -464,6 +465,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 			input.onChildEvent?.(event);
 
 			if (event.type === "tool_execution_end") {
+				if (event.toolName === "contact_supervisor" && isSupervisorWaitTimeout(event.result)) terminateForTimeout(SUPERVISOR_WAIT_TIMEOUT_MESSAGE);
 				clearActiveToolTimeout(event);
 				removeActiveToolCall(event);
 				return;
@@ -486,6 +488,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 
 			if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
 				if (event.type === "tool_result_end") {
+					if ((event.message as { toolName?: string }).toolName === "contact_supervisor" && isSupervisorWaitTimeout(event.message)) terminateForTimeout(SUPERVISOR_WAIT_TIMEOUT_MESSAGE);
 					clearActiveToolTimeout(event);
 					removeActiveToolCall({
 						toolCallId: (event.message as { toolCallId?: unknown }).toolCallId ?? event.toolCallId,
