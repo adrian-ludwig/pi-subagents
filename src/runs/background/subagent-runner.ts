@@ -2962,10 +2962,15 @@ export async function runSubagent(
 		statusPayload.lastUpdate = now;
 		writeStatusPayload();
 	};
+	const pendingSupervisorWaits = new Set<string>();
 	const setSupervisorWaiting = (index: number, key: string, waiting: boolean) => {
 		const ownedKey = `${index}:${key}`;
 		runTimeout?.setWaiting(ownedKey, waiting);
 		checkpointTimeout?.setWaiting(ownedKey, waiting);
+		if (waiting) pendingSupervisorWaits.add(ownedKey);
+		else pendingSupervisorWaits.delete(ownedKey);
+		statusPayload.pendingSupervisorWaits = [...pendingSupervisorWaits];
+		writeStatusPayload();
 		appendJsonl(eventsPath, JSON.stringify({ type: SUPERVISOR_WAIT_EVENT, runId: id, key: ownedKey, waiting }));
 	};
 	const updateStepFromChildEvent = (flatIndex: number, event: ChildEvent): void => {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { restoreSupervisorWaits } from "../shared/active-runtime-timeout.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -6091,8 +6092,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 									// The previous run's awaited async child may still be running: wait for that exact run
 									// instead of launching again. Journal it first so another reload can re-attach too.
 									const priorRunId = priorChild.runId;
-									admission.adoptSupervisorWait(priorRunId);
 									const priorAsyncDir = path.join(DIRS.async, priorRunId);
+									const priorStatus = readStatus(priorAsyncDir);
+									if (priorStatus?.runId === priorRunId && (priorStatus.state === "running" || priorStatus.state === "queued")) restoreSupervisorWaits(deps.pi.events, priorRunId, priorStatus.pendingSupervisorWaits);
+									admission.adoptSupervisorWait(priorRunId);
 									appendWorkflowChildJournal(asyncDir, { type: "start", key, fingerprint: journalFingerprint, runId: priorRunId });
 									const stopListener = stopAwaitedAsyncChildOnAbort(workflowSignal, deps.state, priorRunId, priorAsyncDir, deps.kill);
 									const reattached = await awaitExistingAsyncRun(priorAsyncDir, priorRunId, workflowSignal).finally(stopListener.remove);

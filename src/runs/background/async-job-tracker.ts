@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { renderWidget, widgetRenderKey } from "../../tui/render.ts";
 import { formatControlNoticeMessage } from "../shared/subagent-control.ts";
-import { SUPERVISOR_WAIT_EVENT, emitSupervisorWait, isSupervisorWaitEvent } from "../shared/active-runtime-timeout.ts";
+import { SUPERVISOR_WAIT_EVENT, clearSupervisorWaits, emitSupervisorWait, isSupervisorWaitEvent, restoreSupervisorWaits } from "../shared/active-runtime-timeout.ts";
 import {
 	type AsyncJobState,
 	type AsyncStartedEvent,
@@ -264,7 +264,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			supervisorNoticeTimers.delete(key);
 		}
 	};
-	const emitNewControlEvents = (job: AsyncJobState) => {
+	const emitNewControlEvents = (job: AsyncJobState, waitsOnly = false, end?: number) => {
 		const eventsPath = path.join(job.asyncDir, "events.jsonl");
 		let fd: number;
 		try {
@@ -280,12 +280,13 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			let cursor = stat.size < (savedCursor ?? 0) ? 0 : (savedCursor ?? 0);
 			const startedFromTail = savedCursor === undefined && stat.size > CONTROL_EVENT_SCAN_WINDOW_BYTES;
 			if (startedFromTail) cursor = stat.size - CONTROL_EVENT_SCAN_WINDOW_BYTES;
-			if (stat.size <= cursor) return;
+			const available = Math.min(stat.size, end ?? stat.size);
+			if (available <= cursor) return;
 			const previousByte = Buffer.alloc(1);
 			const startsMidLine = cursor > 0
 				&& fs.readSync(fd, previousByte, 0, 1, cursor - 1) === 1
 				&& previousByte[0] !== 0x0a;
-			const scanEnd = Math.min(stat.size, cursor + CONTROL_EVENT_SCAN_WINDOW_BYTES);
+			const scanEnd = Math.min(available, cursor + CONTROL_EVENT_SCAN_WINDOW_BYTES);
 			const handleLine = (line: string) => {
 				if (!line.trim()) return;
 				let parsed: unknown;
@@ -296,6 +297,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 					return;
 				}
 				if (!parsed || typeof parsed !== "object") return;
+				if (waitsOnly && (parsed as { type?: unknown }).type !== SUPERVISOR_WAIT_EVENT) return;
 				if ((parsed as { type?: unknown }).type === "subagent.child-status") {
 					const event = parsed as Partial<SubagentChildStatusEvent>;
 					if (event.version !== 1 || typeof event.runId !== "string" || typeof event.childId !== "string" || (event.status !== "started" && event.status !== "stopping" && event.status !== "stopped") || typeof event.ts !== "number") return;
@@ -413,7 +415,23 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		}
 	};
 
+	const retireSupervisorWaits = (job: AsyncJobState) => {
+		try {
+			const end = fs.statSync(path.join(job.asyncDir, "events.jsonl")).size;
+			let cursor: number | undefined;
+			do {
+				cursor = job.controlEventCursor;
+				emitNewControlEvents(job, true, end);
+			} while (job.controlEventCursor !== cursor && (job.controlEventCursor ?? 0) < end);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error(`Failed to drain supervisor wait events for '${job.asyncId}':`, error);
+		}
+		clearSupervisorWaits(pi.events, job.asyncId);
+	};
+
 	const closeJobWatcher = (asyncId: string) => {
+		const job = state.asyncJobs.get(asyncId);
+		if (job) retireSupervisorWaits(job);
 		const watched = jobWatchers.get(asyncId);
 		if (watched?.retryTimer) clearTimeout(watched.retryTimer);
 		for (const watcher of watched?.watchers.values() ?? []) watcher.close();
@@ -485,7 +503,10 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			if (status) {
 				const previousStatus = job.status;
 				job.status = status.state;
-				if (!isTerminalJobStatus(job.status)) terminalPublications.delete(job.asyncId);
+				if (!isTerminalJobStatus(job.status)) {
+					terminalPublications.delete(job.asyncId);
+					restoreSupervisorWaits(pi.events, job.asyncId, status.pendingSupervisorWaits);
+				}
 				if (job.status === "running") runningJobIds.add(job.asyncId);
 				else runningJobIds.delete(job.asyncId);
 				if (!isTerminalJobStatus(job.status)) cancelCleanup(job.asyncId);
@@ -563,6 +584,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 							terminalPublications.set(job.asyncId, publication);
 						} else cancelCleanup(job.asyncId);
 					}
+					if (!publication?.pending) retireSupervisorWaits(job);
 					// Scan on close too: publication may have raced the payload check.
 					if (!isTerminalJobStatus(previousStatus) || (wasPending && !publication?.pending)) options.onJobTerminal?.();
 					rememberFleetJob(state, job);
@@ -793,6 +815,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			// Delivery can precede the first terminal status refresh. Remember its
 			// settlement even when no pending publication has been observed yet.
 			terminalPublications.set(asyncId, { pending: false });
+			retireSupervisorWaits(job);
 			try {
 				updateAsyncJobNestedProjection(job);
 			} catch (error) {
@@ -806,6 +829,9 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	};
 
 	const dispose = () => {
+		for (const job of state.asyncJobs.values()) {
+			if (!jobWatchers.has(job.asyncId)) retireSupervisorWaits(job);
+		}
 		if (state.poller) clearInterval(state.poller);
 		state.poller = null;
 		rootWatcher?.close();
@@ -852,6 +878,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		for (const run of runs) {
 			const job = summaryToJob(run);
 			state.asyncJobs.set(run.id, job);
+			restoreSupervisorWaits(pi.events, run.id, run.pendingSupervisorWaits);
 			if (job.status === "running") runningJobIds.add(job.asyncId);
 			rememberFleetJob(state, job);
 			watchJob(job);
