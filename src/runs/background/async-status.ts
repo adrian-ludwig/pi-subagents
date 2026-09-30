@@ -98,6 +98,7 @@ export interface AsyncRunSummary {
 	toolCallId?: string;
 	sessionId?: string;
 	state: "queued" | "running" | "complete" | "failed" | "partial" | "paused" | "stopped" | "rejected";
+	pendingSupervisorWaits?: string[];
 	error?: string;
 	activityState?: ActivityState;
 	lastActivityAt?: number;
@@ -425,6 +426,7 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 		...(status.timeoutMs !== undefined ? { timeoutMs: status.timeoutMs } : {}),
 		...(status.deadlineAt !== undefined ? { deadlineAt: status.deadlineAt } : {}),
 		...(status.timedOut !== undefined ? { timedOut: status.timedOut } : {}),
+		...(status.pendingSupervisorWaits ? { pendingSupervisorWaits: status.pendingSupervisorWaits } : {}),
 		...(status.stopped !== undefined ? { stopped: status.stopped } : {}),
 		...(status.turnBudget ? { turnBudget: status.turnBudget } : {}),
 		...(status.turnBudgetExceeded !== undefined ? { turnBudgetExceeded: status.turnBudgetExceeded } : {}),
