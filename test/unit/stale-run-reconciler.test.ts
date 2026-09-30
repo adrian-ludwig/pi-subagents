@@ -26,6 +26,25 @@ function errno(code: string): NodeJS.ErrnoException {
 }
 
 describe("async stale-run reconciliation", () => {
+	it("repairs supervisor expiry from structured result fields without promoting it to failure", () => {
+		const root = tempRoot("pi-supervisor-expiry-repair-");
+		try {
+			const asyncDir = path.join(root, "run");
+			const resultsDir = path.join(root, "results");
+			const terminationReason = "timed-out-waiting-on-supervisor";
+			writeStatus(asyncDir, { runId: "run", mode: "single", state: "running", pid: 12345, startedAt: 1, lastUpdate: 1, steps: [{ agent: "worker", status: "running" }] });
+			writeAsyncResultFile(path.join(resultsDir, "run.json"), { id: "run", sessionId: "parent", success: false, state: "paused", terminationReason, timedOut: true, error: "not timeout prose", results: [{ agent: "worker", success: false, terminationReason, timedOut: true, error: "not timeout prose", sessionFile: "/retained.jsonl" }] });
+			const status = reconcileAsyncRun(asyncDir, { resultsDir, kill: () => { throw errno("ESRCH"); }, now: () => 2000 }).status!;
+			assert.equal(status.state, "paused");
+			assert.equal(status.terminationReason, terminationReason);
+			assert.equal(status.timedOut, true);
+			assert.equal(status.activityState, "needs_attention");
+			assert.equal(status.steps?.[0]?.status, "paused");
+			assert.equal(status.steps?.[0]?.terminationReason, terminationReason);
+			assert.equal(status.steps?.[0]?.sessionFile, "/retained.jsonl");
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
 	it("classifies pid liveness without treating EPERM as dead", () => {
 		assert.equal(checkPidLiveness(process.pid), "alive");
 		assert.equal(checkPidLiveness(2_147_483_647, () => true), "alive");

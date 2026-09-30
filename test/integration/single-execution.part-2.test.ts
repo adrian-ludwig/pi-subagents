@@ -4606,17 +4606,39 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		assert.equal(result.error, "Subagent timed out after 250ms.");
 	});
 
-	it("foreground supervisor-wait expiry retains a session admitted for real resume", async () => {
+	for (const mode of ["single", "workflow"] as const) it(`foreground ${mode} supervisor-wait expiry is retained attention with real resume`, async () => {
 		const executor = makeExecutor([makeAgent("worker")]);
 		mockPi.onCall({ steps: [
 			{ jsonl: [{ ...events.toolStart("contact_supervisor", { reason: "need_decision", message: "Question" }), toolCallId: "expired-ask" }] },
-			{ jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "expired-ask", result: { content: [{ type: "text", text: "Timed out waiting on supervisor." }], details: { supervisorWaitTimedOut: true } } }] },
+			{ jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "expired-ask", result: { content: [{ type: "text", text: "Timed out waiting on supervisor." }], details: { terminationReason: "timed-out-waiting-on-supervisor" } } }] },
 			{ delay: 10000 },
 		] });
-		const expired = await executor.execute("expired", { agent: "worker", task: "Ask", async: false, acceptance: false }, undefined, undefined, makeMinimalCtx(tempDir));
+		const expired = await executor.execute("expired", mode === "single"
+			? { agent: "worker", task: "Ask", async: false, acceptance: false, agentContract: { version: 1 } }
+			: { async: false, workflowScript: `return await runs.run("ask", { agent: "worker", task: "Ask", acceptance: false, output: false, agentContract: { version: 1 } });` }, undefined, undefined, makeMinimalCtx(tempDir));
+		assert.equal(expired.details.state, "paused");
+		assert.equal(expired.details.activityState, "needs_attention");
+		assert.equal(expired.details.success, false);
+		assert.equal(expired.details.timedOut, true);
+		assert.equal(expired.details.terminationReason, "timed-out-waiting-on-supervisor");
 		assert.equal(expired.details.results[0]?.error, "Timed out waiting on supervisor.");
 		assert.equal(expired.details.results[0]?.timedOut, true);
-		const runId = expired.details.runId!;
+		assert.equal(expired.details.results[0]?.terminationReason, "timed-out-waiting-on-supervisor");
+		assert.equal(expired.details.results[0]?.execution?.status, "paused");
+		assert.notEqual(expired.details.results[0]?.acceptance?.status, "accepted");
+		const runId = mode === "single" ? expired.details.runId! : expired.details.workflow!.receipt!.entries.ask.latestRunId!;
+		if (mode === "workflow") {
+			const receipt = expired.details.workflow!.receipt!;
+			assert.equal(receipt.state, "paused");
+			assert.deepEqual(receipt.entries.ask.terminalOutcome, { state: "paused", reason: "timed-out-waiting-on-supervisor" });
+			assert.equal(receipt.entries.ask.resumability.state, "resumable");
+		}
+		const { DIRS } = await import("../../src/shared/types.ts");
+		const history = JSON.parse(fs.readFileSync(path.join(DIRS.results, "foreground-history.json"), "utf-8"));
+		const retained = history.runs.find((run: { runId: string }) => run.runId === runId)?.children[0];
+		assert.equal(retained.status, "paused");
+		assert.equal(retained.terminationReason, "timed-out-waiting-on-supervisor");
+		assert.equal(retained.activityState, "needs_attention");
 		assert.ok(runId);
 		assert.ok(expired.details.results[0]?.sessionFile);
 		mockPi.onCall({ jsonl: [events.assistantMessage("Resumed")] });

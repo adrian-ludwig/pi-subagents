@@ -95,6 +95,7 @@ function appendJsonlBestEffort(filePath: string, payload: object): void {
 }
 
 interface ResultChildOutcome {
+	terminationReason?: AsyncStatus["terminationReason"];
 	agent?: string;
 	sessionName?: string;
 	success?: boolean;
@@ -108,6 +109,7 @@ interface ResultChildOutcome {
 }
 
 interface ResultRepairData {
+	terminationReason?: AsyncStatus["terminationReason"];
 	state: "complete" | "failed" | "partial" | "paused" | "stopped" | "rejected";
 	error?: string;
 	results?: ResultChildOutcome[];
@@ -124,9 +126,10 @@ function regularFileExists(filePath: string): boolean {
 
 function readResultRepairData(resultPath: string): ResultRepairData | undefined {
 	try {
-		const data = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as { success?: boolean; state?: string; exitCode?: number; error?: unknown; results?: unknown };
+		const data = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as { success?: boolean; state?: string; exitCode?: number; error?: unknown; terminationReason?: unknown; results?: unknown };
 		if (data.error !== undefined && typeof data.error !== "string") throw new Error(`Invalid async result file '${resultPath}': error must be a string.`);
-		const state = data.success ? "complete" : data.state === "stopped" ? "stopped" : data.state === "rejected" ? "rejected" : data.state === "partial" ? "partial" : data.state === "paused" || data.exitCode === 0 ? "paused" : "failed";
+		const terminationReason = data.terminationReason === "timed-out-waiting-on-supervisor" ? data.terminationReason : undefined;
+		const state = terminationReason ? "paused" : data.success ? "complete" : data.state === "stopped" ? "stopped" : data.state === "rejected" ? "rejected" : data.state === "partial" ? "partial" : data.state === "paused" || data.exitCode === 0 ? "paused" : "failed";
 		const results = Array.isArray(data.results)
 			? data.results.map((entry, index) => {
 				if (!entry || typeof entry !== "object" || Array.isArray(entry)) return {};
@@ -136,7 +139,7 @@ function readResultRepairData(resultPath: string): ResultRepairData | undefined 
 				return child;
 			})
 			: undefined;
-		return { state, ...(data.error ? { error: data.error } : {}), ...(results ? { results } : {}) };
+		return { state, ...(terminationReason ? { terminationReason } : {}), ...(data.error ? { error: data.error } : {}), ...(results ? { results } : {}) };
 	} catch (error) {
 		if (isNotFoundError(error)) return undefined;
 		throw new Error(`Failed to read async result file '${resultPath}': ${getErrorMessage(error)}`, {
@@ -146,6 +149,7 @@ function readResultRepairData(resultPath: string): ResultRepairData | undefined 
 }
 
 function childState(overallState: ResultRepairData["state"], child: ResultChildOutcome | undefined): ResultRepairData["state"] {
+	if (child?.terminationReason === "timed-out-waiting-on-supervisor") return "paused";
 	if (child?.success === true) return "complete";
 	if (child?.success === false) return "failed";
 	return overallState;
@@ -172,8 +176,9 @@ function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: 
 			status: state === "complete" ? "complete" as const : state,
 			endedAt: step.endedAt ?? now,
 			durationMs: step.startedAt !== undefined && step.durationMs === undefined ? Math.max(0, now - step.startedAt) : step.durationMs,
-			exitCode: step.exitCode ?? (state === "complete" || state === "paused" ? 0 : 1),
-			error: state === "failed" || state === "partial" || state === "stopped" ? step.error ?? child?.error : step.error,
+			exitCode: step.exitCode ?? (child?.terminationReason ? 1 : state === "complete" || state === "paused" ? 0 : 1),
+			...(child?.terminationReason ? { terminationReason: child.terminationReason, timedOut: true, activityState: "needs_attention" as const } : {}),
+			error: child?.terminationReason ? child.error : state === "failed" || state === "partial" || state === "stopped" ? step.error ?? child?.error : step.error,
 			stopped: state === "stopped" ? true : step.stopped,
 			sessionName: step.sessionName ?? child?.sessionName,
 			sessionFile: step.sessionFile ?? child?.sessionFile,
@@ -192,7 +197,8 @@ function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: 
 			processTerminal: { version: 1 as const, state: "unknown" as const, runId: status.runId, runnerProcessInstanceId: "observer-unavailable", reason: "observer-unavailable" as const },
 		} : {}),
 		...(repair.state === "stopped" ? { stopped: true } : {}),
-		activityState: undefined,
+		activityState: repair.terminationReason ? "needs_attention" : undefined,
+		...(repair.terminationReason ? { terminationReason: repair.terminationReason, timedOut: true, error: repair.error } : {}),
 		lastUpdate: now,
 		endedAt: status.endedAt ?? now,
 		steps,

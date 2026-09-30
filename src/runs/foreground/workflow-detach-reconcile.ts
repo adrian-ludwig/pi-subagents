@@ -32,7 +32,7 @@ import {
 
 export function applyDetachedChildToPausedWorkflow(
 	status: AsyncStatus,
-	input: { childRunId: string; result: Pick<SingleResult, "exitCode" | "error" | "interrupted" | "sessionFile" | "sessionName" | "stopped">; workflowKey?: string },
+	input: { childRunId: string; result: Pick<SingleResult, "exitCode" | "error" | "interrupted" | "sessionFile" | "sessionName" | "stopped" | "timedOut" | "terminationReason">; workflowKey?: string },
 ): AsyncStatus | undefined {
 	return applyDetachedChildSettlement(status, input);
 }
@@ -64,6 +64,7 @@ function workflowResultChildren(status: AsyncStatus, childRunId: string, result:
 				output,
 				outputState: output.trim() ? "present" : "absent",
 				detached: undefined,
+				...(result.terminationReason ? { terminationReason: result.terminationReason, timedOut: true, state: "paused" } : {}),
 				...(usage ? { usage } : {}),
 				...(outputReference ? { outputReference } : {}),
 				...(outputPathMapping ? { outputPathMapping } : {}),
@@ -90,6 +91,7 @@ function workflowResultChildren(status: AsyncStatus, childRunId: string, result:
 		...(step.interrupted ? { interrupted: true } : {}),
 		...(step.runId === childRunId && terminalOutcome ? { terminalOutcome } : step.workflowKey && receipt?.entries[step.workflowKey]?.terminalOutcome ? { terminalOutcome: receipt.entries[step.workflowKey]!.terminalOutcome } : {}),
 		...(step.stopped ? { stopped: true } : {}),
+		...(step.terminationReason ? { terminationReason: step.terminationReason, timedOut: true, state: "paused" } : {}),
 		...(step.error ? { error: step.error } : {}),
 	}));
 }
@@ -139,6 +141,7 @@ function reconcileWorkflowReceipt(status: AsyncStatus, childRunId: string, resul
 			...(childTerminalOutcome ? { terminalOutcome: childTerminalOutcome } : {}),
 			...(externalAdapter ? { externalAdapter } : {}),
 		};
+	const terminalOutcome = status.terminationReason ? workflowTerminalOutcomeForResult(status) : receipt.terminalOutcome?.state === "paused" ? undefined : receipt.terminalOutcome;
 	const next: WorkflowReceipt = {
 		...receipt,
 		state: status.state === "complete" ? "complete" : status.state === "stopped" ? "stopped" : status.state === "paused" ? "paused" : "failed",
@@ -147,7 +150,7 @@ function reconcileWorkflowReceipt(status: AsyncStatus, childRunId: string, resul
 			[key]: updatedEntry,
 		},
 		workflowChildren: status.workflowChildren,
-		...(receipt.terminalOutcome ? { terminalOutcome: receipt.terminalOutcome } : {}),
+		terminalOutcome,
 		...(resolution ? { workflowResolution: resolution } : {}),
 	};
 	if (resolution) next.recovery = workflowRecoveryActions(next);
@@ -258,6 +261,8 @@ export function reconcileDetachedWorkflowChildCompletion(input: {
 		job.status = plan.status.state;
 		job.updatedAt = plan.status.lastUpdate;
 		job.activityState = plan.status.activityState;
+		job.terminationReason = plan.status.terminationReason;
+		job.timedOut = plan.status.timedOut;
 		job.steps = plan.status.steps?.map((step, index) => ({ ...step, index }));
 		job.workflow = plan.status.workflow;
 	}
@@ -286,6 +291,8 @@ export function reconcileDetachedWorkflowChildCompletion(input: {
 			agent: "workflow",
 			success: plan.status.state === "complete",
 			state: plan.status.state,
+			...(plan.status.timedOut !== undefined ? { timedOut: plan.status.timedOut } : {}),
+			...(plan.status.terminationReason ? { terminationReason: plan.status.terminationReason } : {}),
 			...(plan.publicResult.workflowReceipt ? { workflowReceipt: plan.publicResult.workflowReceipt } : {}),
 			...(resolution ? { workflowResolution: resolution } : {}),
 			...(plan.receipt?.terminalOutcome ? { terminalOutcome: plan.receipt.terminalOutcome } : {}),
