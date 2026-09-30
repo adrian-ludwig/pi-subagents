@@ -99,6 +99,7 @@ import {
 import { stopAsyncRun } from "./async-stop-action.ts";
 import { dismissRecoveredWorkflow } from "./async-dismiss-action.ts";
 import { promotePausedWorkflowIfSettled, reconcileDetachedWorkflowChildCompletion } from "./workflow-detach-reconcile.ts";
+import { planWorkflowSettlement, type WorkflowPublicChild } from "../../workflows/workflow-settlement.ts";
 import { reconcileAsyncRun } from "../background/stale-run-reconciler.ts";
 import { resolveAsyncRootResultPath, waitForImportedAsyncRoot } from "../background/chain-root-attachment.ts";
 import { awaitExistingAsyncRun, claimWorkflowAwaitedResult } from "../background/await-async-run.ts";
@@ -3943,6 +3944,7 @@ async function finalizeSingleWorktreeHandoff(input: {
 						state: input.result.stopped ? "stopped" : undefined,
 						processSignal: input.result.processSignal,
 						timedOut: input.result.timedOut,
+						terminationReason: input.result.terminationReason,
 						stopped: input.result.stopped,
 						turnBudgetExceeded: input.result.turnBudgetExceeded,
 					})),
@@ -3955,7 +3957,11 @@ async function finalizeSingleWorktreeHandoff(input: {
 			};
 			try {
 				writeParallelHandoffGroup(handoff);
-				const cleanup = cleanupWorktrees(input.worktreeSetup, { kind: "preserve", capturedDiffs: diffs, handoffManifestPath: manifestPath });
+				const cleanup = cleanupWorktrees(input.worktreeSetup, {
+					kind: "preserve", capturedDiffs: diffs, handoffManifestPath: manifestPath,
+					...(input.result.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON && !input.result.stopped && input.result.sessionFile && fs.existsSync(input.result.sessionFile)
+						? { cleanupBlocker: "retained child resume requires managed worktree cwd" } : {}),
+				});
 				const reference = writeParallelHandoffGroup({ ...handoff, cleanup });
 				return {
 					suffix: [diffSummary, formatParallelHandoffReference(reference)].filter(Boolean).join("\n\n"),
@@ -4667,10 +4673,11 @@ function workflowRunningChildrenSummary(children: WorkflowScriptChildResult[]): 
 	return running.length ? `${running.length} child ${running.length === 1 ? "run remains" : "runs remain"} running or uncollected: ${running.map((child) => `${child.key}=${child.runId}`).join(", ")}. These launch receipts contain no final child results.` : "";
 }
 
-function workflowResultChildren(children: WorkflowScriptChildResult[], status: AsyncStatus, includeFailureFields: boolean) {
+function workflowResultChildren(children: WorkflowScriptChildResult[], status: AsyncStatus, includeFailureFields: boolean): WorkflowPublicChild[] {
 	return children.map((child) => {
 		const sessionName = status.steps?.find((step) => step.workflowKey === child.key)?.sessionName;
-		return { workflowKey: child.key, ...(child.agent ? { agent: child.agent } : {}), ...(child.runId ? { runId: child.runId } : {}), ...(sessionName ? { sessionName } : {}), ...workflowChildAccountingFields(child), ...(child.terminationReason ? { terminationReason: child.terminationReason, timedOut: true, state: "paused" } : {}), output: child.output, outputState: child.output.trim() || child.structuredOutput !== undefined ? "present" : "absent", structuredOutput: child.structuredOutput, ...(child.state === "running" ? { state: "running" } : { success: child.ok }), ...(child.asyncDir ? { asyncDir: child.asyncDir } : {}), ...(child.outputReference ? { outputReference: child.outputReference } : {}), ...(includeFailureFields && child.terminalOutcome ? { terminalOutcome: child.terminalOutcome } : {}), ...(child.outputPathMapping ? { outputPathMapping: child.outputPathMapping } : {}), ...(child.stopped ? { stopped: true } : {}), ...(child.interrupted ? { interrupted: true } : {}), ...(includeFailureFields && child.detached && status.state !== "complete" ? { detached: true } : {}), ...(child.outputArtifactPath || child.outputReference ? { artifactPaths: { outputPath: child.outputArtifactPath ?? child.outputReference } } : {}) };
+		const outputPath = child.outputArtifactPath ?? child.outputReference;
+		return { workflowKey: child.key, ...(child.agent ? { agent: child.agent } : {}), ...(child.runId ? { runId: child.runId } : {}), ...(sessionName ? { sessionName } : {}), ...workflowChildAccountingFields(child), ...(child.terminationReason ? { terminationReason: child.terminationReason, timedOut: true, state: "paused" } : {}), output: child.output, outputState: child.output.trim() || child.structuredOutput !== undefined ? "present" : "absent", structuredOutput: child.structuredOutput, ...(child.state === "running" ? { state: "running" } : { success: child.ok }), ...(child.asyncDir ? { asyncDir: child.asyncDir } : {}), ...(child.outputReference ? { outputReference: child.outputReference } : {}), ...(includeFailureFields && child.terminalOutcome ? { terminalOutcome: child.terminalOutcome } : {}), ...(child.outputPathMapping ? { outputPathMapping: child.outputPathMapping } : {}), ...(child.stopped ? { stopped: true } : {}), ...(child.interrupted ? { interrupted: true } : {}), ...(includeFailureFields && child.detached && status.state !== "complete" ? { detached: true } : {}), ...(outputPath ? { artifactPaths: { outputPath } } : {}) };
 	});
 }
 
@@ -6309,20 +6316,26 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const resultSummary = appendWorkflowOutputWarning(terminalSummary, outputWarning);
 						const receiptState: WorkflowReceiptState = status.state === "complete" ? "complete" : status.state === "paused" ? "paused" : status.state === "stopped" ? "stopped" : "failed";
 						const receipt = terminalWorkflowReceipt(workflowRunId, receiptState, partial.children, workflowChildren, terminalOutcome, validHostStepNodes(status.workflowGraph), workflowResource?.provenance, workflowArgsDigest);
-						delete status.workflowReceiptPath;
-						let workflowReceipt: { path: string; receipt: WorkflowReceipt } | undefined;
+						let receiptPath: string | undefined;
+						let receiptPersistenceError: string | undefined;
 						try {
-							workflowReceipt = { path: writeWorkflowReceipt(asyncDir, receipt), receipt };
-							status.workflowReceiptPath = workflowReceipt.path;
+							receiptPath = writeWorkflowReceipt(asyncDir, receipt);
 						} catch (receiptError) {
-							appendWorkflowEvent({ type: "subagent.workflow.receipt_write_failed", error: `Failed to persist async workflow receipt: ${receiptError instanceof Error ? receiptError.message : String(receiptError)}` });
+							receiptPersistenceError = `Failed to persist async workflow receipt: ${receiptError instanceof Error ? receiptError.message : String(receiptError)}`;
+							appendWorkflowEvent({ type: "subagent.workflow.receipt_write_failed", error: receiptPersistenceError });
 						}
-						if (!writeWorkflowResult({ id: workflowRunId, runId: workflowRunId, toolCallId, agent: "workflow", mode: "workflow", success: status.state === "complete", state: status.state, summary: resultSummary, error: status.state === "complete" ? undefined : status.error, stopped: status.stopped, activityState: status.activityState, timedOut: status.timedOut, terminationReason: status.terminationReason, workflowChildren, ...(terminalOutcome ? { terminalOutcome } : {}), results: workflowResultChildren(partial.children, status, true), workflow: status.workflow, ...(workflowCapabilityCeiling ? { admissionCapabilityCeiling: workflowCapabilityCeiling } : {}), ...(workflowReceipt ? { workflowReceipt } : {}), asyncDir, cwd: workflowCwd, sessionId: currentSessionId, completionOwnerId, ...(requestParams.scheduleOrigin ? { scheduleOrigin: requestParams.scheduleOrigin } : {}), timestamp: Date.now(), durationMs: Date.now() - startedAt })) return;
+						const settlement = planWorkflowSettlement({
+							status, summary: resultSummary, children: workflowResultChildren(partial.children, status, true),
+							receipt, receiptPath, receiptPersistenceError, terminalOutcome,
+							baseResult: { id: workflowRunId, runId: workflowRunId, toolCallId, agent: "workflow", mode: "workflow", workflow: status.workflow, ...(workflowCapabilityCeiling ? { admissionCapabilityCeiling: workflowCapabilityCeiling } : {}), asyncDir, cwd: workflowCwd, sessionId: currentSessionId, completionOwnerId, ...(requestParams.scheduleOrigin ? { scheduleOrigin: requestParams.scheduleOrigin } : {}), durationMs: Date.now() - startedAt },
+						});
+						status = settlement.status;
+						if (!writeWorkflowResult(settlement.publicResult)) return;
 						if (pendingResultPublication && !await pendingResultPublication) return;
 						persist();
 						deps.refreshResultDelivery?.();
 						persistClosed = true;
-						appendWorkflowEvent({ type: "subagent.workflow.completed", state: status.state, timedOut: status.timedOut, terminationReason: status.terminationReason, ...(workflowArgsDigest ? { argsDigest: workflowArgsDigest } : {}), ...(terminalOutcome ? { terminalOutcome } : {}), ...(status.error ? { error: status.error } : {}), ...(status.activityState ? { activityState: status.activityState } : {}) });
+						appendWorkflowEvent({ type: "subagent.workflow.completed", state: status.state, timedOut: status.timedOut, terminationReason: status.terminationReason, ...(workflowArgsDigest ? { argsDigest: workflowArgsDigest } : {}), ...(settlement.publicResult.terminalOutcome ? { terminalOutcome: settlement.publicResult.terminalOutcome } : {}), ...(status.error ? { error: status.error } : {}), ...(status.activityState ? { activityState: status.activityState } : {}) });
 					} finally {
 						// Idempotent cleanup only: a failed result/index write must not authorize terminal status.
 						try {

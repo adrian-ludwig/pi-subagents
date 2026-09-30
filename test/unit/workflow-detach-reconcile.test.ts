@@ -661,6 +661,7 @@ describe("reconcileDetachedWorkflowChildCompletion", () => {
 		fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status), "utf-8");
 		fs.writeFileSync(path.join(asyncDir, "workflow-receipt.json"), JSON.stringify({ version: 1, workflowRunId, state: "paused", createdAt: 1, entries: { detaches: { key: "wrong" } } }), "utf-8");
 		fs.mkdirSync(path.join(asyncDir, "events.jsonl"));
+		fs.writeFileSync(path.join(DIRS.results, `${workflowRunId}.json`), JSON.stringify({ results: [{ workflowKey: "detaches", agent: "worker", runId: "child-1", success: false, output: "", outputState: "absent", detached: true }] }));
 		const state = {
 			asyncJobs: new Map([[workflowRunId, { asyncId: workflowRunId, asyncDir, status: "paused" as const }]]),
 		} as SubagentState;
