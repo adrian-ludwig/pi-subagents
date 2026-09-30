@@ -1912,6 +1912,7 @@ export interface AsyncStatus {
 	revivedFrom?: string;
 	isNested?: boolean;
 	state: "queued" | "running" | "complete" | "failed" | "partial" | "paused" | "stopped" | "rejected";
+	pendingSupervisorWaits?: string[];
 	/** Display-only dismissal marker for a reload-orphaned workflow. */
 	displayDismissedAt?: number;
 	error?: string;
