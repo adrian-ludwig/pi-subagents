@@ -30,6 +30,7 @@ import { childSessionHasQueuedMessages, projectChildSessionEventForJson, type Ch
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
 import { isOrdinaryToolForMidToolExit } from "../shared/process-signal.ts";
 import { STRUCTURED_OUTPUT_FOLLOW_UP } from "../shared/structured-output.ts";
+import { isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE } from "../shared/active-runtime-timeout.ts";
 import { formatSteerMessage } from "../shared/subagent-prompt-runtime.ts";
 import type { SteerDeliveryStatus, SteerRequest } from "./control-channel.ts";
 import { takeMatchingAcceptedSteer, unconsumedSteerReason } from "./steering.ts";
@@ -489,6 +490,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 			input.onChildEvent?.(event);
 
 			if (event.type === "tool_execution_end") {
+				if (event.toolName === "contact_supervisor" && isSupervisorWaitTimeout(event.result)) terminateForTimeout(SUPERVISOR_WAIT_TIMEOUT_MESSAGE);
 				clearActiveToolTimeout(event);
 				removeActiveToolCall(event);
 				return;
