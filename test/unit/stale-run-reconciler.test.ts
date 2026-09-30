@@ -45,6 +45,28 @@ describe("async stale-run reconciliation", () => {
 		} finally { fs.rmSync(root, { recursive: true, force: true }); }
 	});
 
+	it("keeps an explicit stopped result authoritative over stale supervisor expiry metadata", () => {
+		const root = tempRoot("pi-stopped-expiry-repair-");
+		try {
+			const asyncDir = path.join(root, "run");
+			const resultsDir = path.join(root, "results");
+			const terminationReason = "timed-out-waiting-on-supervisor";
+			writeStatus(asyncDir, { runId: "run", mode: "single", state: "running", pid: 12345, startedAt: 1, lastUpdate: 1, terminationReason, timedOut: true, steps: [{ agent: "worker", status: "running" }] });
+			writeAsyncResultFile(path.join(resultsDir, "run.json"), { id: "run", sessionId: "parent", success: false, state: "stopped", stopped: true, terminationReason, timedOut: true, error: "Stopped", results: [{ agent: "worker", success: false, stopped: true, terminationReason, sessionFile: "/retained.jsonl" }] });
+			const status = reconcileAsyncRun(asyncDir, { resultsDir, kill: () => { throw errno("ESRCH"); }, now: () => 2000 }).status!;
+			assert.equal(status.state, "stopped");
+			assert.equal(status.stopped, true);
+			assert.equal(status.terminationReason, undefined);
+			assert.equal(status.timedOut, undefined);
+			assert.equal(status.activityState, undefined);
+			assert.equal(status.steps?.[0]?.status, "stopped");
+			assert.equal(status.steps?.[0]?.terminationReason, undefined);
+			assert.equal(status.steps?.[0]?.sessionFile, "/retained.jsonl");
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("classifies pid liveness without treating EPERM as dead", () => {
 		assert.equal(checkPidLiveness(process.pid), "alive");
 		assert.equal(checkPidLiveness(2_147_483_647, () => true), "alive");

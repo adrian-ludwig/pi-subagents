@@ -42,6 +42,23 @@ describe("active runtime timeout", () => {
 		clock.dispose();
 	});
 
+	it("exposes a finite sliding deadline estimate while paused without consuming budget", (t) => {
+		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+		const clock = createActiveRuntimeTimeout(100);
+		clock.start(() => assert.fail("paused budget expired"));
+		t.mock.timers.tick(30);
+		clock.setWaiting("ask", true);
+		assert.equal(clock.deadlineAt(), 1100);
+		t.mock.timers.tick(5000);
+		assert.equal(clock.remainingMs(), 70);
+		assert.equal(clock.deadlineAt(), 6100);
+		clock.setWaiting("ask", false);
+		t.mock.timers.tick(60);
+		assert.equal(clock.deadlineAt(), 6100);
+		assert.equal(clock.remainingMs(), 10);
+		clock.dispose();
+	});
+
 	it("cleans up cancellation and retains active budget between attempts", (t) => {
 		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
 		let expired = 0;
