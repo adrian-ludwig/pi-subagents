@@ -1221,7 +1221,7 @@ describe("native supervisor channel", () => {
 		let execute: (id: string, params: unknown) => Promise<{ details?: Record<string, unknown> }>;
 		registerNativeSupervisorClient({ getAllTools: () => [], registerTool: (tool: { execute: typeof execute }) => { execute = tool.execute; } } as never, { channelDir, runId, agent: "worker", childIndex: 0 });
 		const result = await execute!("expiry", { reason: "need_decision", message: "Question" });
-		assert.equal(result.details?.supervisorWaitTimedOut, true);
+		assert.equal(result.details?.terminationReason, "timed-out-waiting-on-supervisor");
 		assert.deepEqual(fs.readdirSync(path.join(channelDir, "requests")), []);
 	});
 

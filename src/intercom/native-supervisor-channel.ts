@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import type { ChildSupervisorMetadata } from "../runs/shared/child-runtime-config.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT, POLL_INTERVAL_MS, TEMP_ROOT_DIR, type ControlEvent, type IntercomEventBus, type SubagentState } from "../shared/types.ts";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
-import { emitSupervisorWait, SUPERVISOR_WAIT_TIMEOUT_MESSAGE } from "../runs/shared/active-runtime-timeout.ts";
+import { emitSupervisorWait, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, SUPERVISOR_WAIT_TIMEOUT_REASON } from "../runs/shared/active-runtime-timeout.ts";
 
 import { shouldUseNativeFsWatch } from "../shared/watch-strategy.ts";
 import { MODEL_ONLY_TOOL } from "../shared/extension-context.ts";
@@ -246,7 +246,7 @@ async function sendSupervisorRequest(params: ContactSupervisorParams, metadata: 
 	} catch (error) {
 		removeRequestFile(requestPath(metadata.channelDir, requestId));
 		if (error instanceof SupervisorWaitTimeoutError) {
-			return { content: [{ type: "text", text: error.message }], details: { requestId, reason: params.reason, supervisorWaitTimedOut: true } };
+			return { content: [{ type: "text", text: error.message }], details: { requestId, reason: params.reason, terminationReason: SUPERVISOR_WAIT_TIMEOUT_REASON } };
 		}
 		throw error;
 	}

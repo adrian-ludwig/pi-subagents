@@ -8,6 +8,7 @@ import {
 	type AsyncJobState,
 	type AsyncStartedEvent,
 	type AsyncWidgetLayout,
+	type AsyncStatus,
 	type ControlEvent,
 	type SteeringNotice,
 	type SubagentChildStatusEvent,
@@ -196,6 +197,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			timeoutMs: run.timeoutMs,
 			deadlineAt: run.deadlineAt,
 			timedOut: run.timedOut,
+			terminationReason: run.terminationReason,
 			stopped: run.stopped,
 			turnBudget: run.turnBudget,
 			turnBudgetExceeded: run.turnBudgetExceeded,
@@ -566,6 +568,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				job.timeoutMs = status.timeoutMs ?? job.timeoutMs;
 				job.deadlineAt = status.deadlineAt ?? job.deadlineAt;
 				job.timedOut = status.timedOut ?? job.timedOut;
+				job.terminationReason = status.terminationReason ?? job.terminationReason;
 				job.stopped = status.stopped ?? job.stopped;
 				job.turnBudget = status.turnBudget ?? job.turnBudget;
 				job.turnBudgetExceeded = status.turnBudgetExceeded ?? job.turnBudgetExceeded;
@@ -804,7 +807,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	};
 
 	const handleComplete = (data: unknown) => {
-		const result = data as { id?: string; success?: boolean; state?: AsyncJobState["status"]; asyncDir?: string; sessionId?: string; stopped?: boolean };
+		const result = data as { id?: string; success?: boolean; state?: AsyncJobState["status"]; asyncDir?: string; sessionId?: string; stopped?: boolean; timedOut?: boolean; terminationReason?: AsyncStatus["terminationReason"] };
 		if (typeof state.currentSessionId === "string" && result.sessionId !== state.currentSessionId) return;
 		const asyncId = result.id;
 		if (!asyncId) return;
@@ -814,6 +817,9 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			job.status = result.state ?? (result.success ? "complete" : "failed");
 			runningJobIds.delete(asyncId);
 			job.stopped = result.stopped ?? job.stopped;
+			job.timedOut = result.timedOut ?? job.timedOut;
+			job.terminationReason = result.terminationReason ?? job.terminationReason;
+			if (job.terminationReason) job.activityState = "needs_attention";
 			job.updatedAt = Date.now();
 			if (result.asyncDir && result.asyncDir !== job.asyncDir) {
 				closeJobWatcher(asyncId);

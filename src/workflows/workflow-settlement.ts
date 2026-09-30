@@ -1,3 +1,4 @@
+import { SUPERVISOR_WAIT_TIMEOUT_REASON } from "../runs/shared/active-runtime-timeout.ts";
 import type {
 	AsyncStatus,
 	WorkflowRecoveryAction,
@@ -30,7 +31,9 @@ export interface WorkflowPublicChild {
 	structuredOutput?: unknown;
 	/** Omitted for running launch receipts. */
 	success?: boolean;
-	state?: "running";
+	state?: "running" | "paused";
+	timedOut?: boolean;
+	terminationReason?: AsyncStatus["terminationReason"];
 	asyncDir?: string;
 	terminalOutcome?: WorkflowTerminalOutcome;
 	outputReference?: string;
@@ -88,12 +91,17 @@ export function findWorkflowSettlementStep(status: AsyncStatus, childRunId: stri
 export function promoteSettledPausedWorkflow(status: AsyncStatus, now = Date.now()): AsyncStatus | undefined {
 	if (status.mode !== "workflow" || status.state !== "paused") return undefined;
 	const next = cloneWorkflowStatus(status);
+	const failed = next.steps?.some(candidate => candidate.status === "failed") === true;
+	if (status.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON && !failed) return undefined;
 	const stillOpen = next.steps?.some((candidate) =>
 		candidate.status === "running"
-		|| (candidate.status === "paused" && candidate.activityState === "needs_attention")
+		|| (candidate.status === "paused" && candidate.activityState === "needs_attention" && !candidate.terminationReason)
 	) === true;
 	if (stillOpen || !next.steps?.length) return undefined;
-	const failed = next.steps.some((candidate) => candidate.status === "failed");
+	if (next.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON) {
+		delete next.terminationReason;
+		delete next.timedOut;
+	}
 	next.lastUpdate = now;
 	next.state = "failed";
 	next.endedAt = now;
@@ -104,7 +112,7 @@ export function promoteSettledPausedWorkflow(status: AsyncStatus, now = Date.now
 
 export function applyDetachedChildSettlement(
 	status: AsyncStatus,
-	input: { childRunId: string; result: { exitCode: number | null; error?: string; interrupted?: boolean; sessionFile?: string; sessionName?: string; stopped?: boolean }; workflowKey?: string; now?: number },
+	input: { childRunId: string; result: { exitCode: number | null; error?: string; interrupted?: boolean; timedOut?: boolean; terminationReason?: AsyncStatus["terminationReason"]; sessionFile?: string; sessionName?: string; stopped?: boolean }; workflowKey?: string; now?: number },
 ): AsyncStatus | undefined {
 	if (status.mode !== "workflow" || status.state !== "paused") return undefined;
 	const next = cloneWorkflowStatus(status);
@@ -121,14 +129,25 @@ export function applyDetachedChildSettlement(
 		return candidateStep.status === "failed" && candidateStep.interrupted && candidateStep.error;
 	})?.error;
 	const now = input.now ?? Date.now();
-	step.status = succeeded ? "completed" : "failed";
+	const supervisorWaitExpired = !input.result.stopped && !input.result.interrupted && input.result.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON;
+	step.status = supervisorWaitExpired ? "paused" : succeeded ? "completed" : "failed";
 	step.endedAt = now;
 	delete step.activityState;
 	delete step.currentTool;
 	delete step.currentToolStartedAt;
 	if (input.result.sessionFile) step.sessionFile = input.result.sessionFile;
 	if (input.result.sessionName) step.sessionName = input.result.sessionName;
-	if (succeeded) {
+	if (supervisorWaitExpired) {
+		step.terminationReason = input.result.terminationReason;
+		step.timedOut = true;
+		step.activityState = "needs_attention";
+		step.error = input.result.error;
+		next.terminationReason = input.result.terminationReason;
+		next.timedOut = true;
+		next.activityState = "needs_attention";
+		next.error = input.result.error;
+		next.endedAt = now;
+	} else if (succeeded) {
 		delete step.error;
 		delete step.interrupted;
 	} else if (input.result.interrupted || input.result.stopped) {
@@ -150,6 +169,7 @@ export function applyDetachedChildSettlement(
 }
 
 export function classifyWorkflowSettlement(status: AsyncStatus, interrupted = false): WorkflowTerminalResolution | undefined {
+	if (status.state === "paused" && status.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON) return "settled-awaiting-resume";
 	if (status.state !== "complete" && status.state !== "failed") return undefined;
 	if (status.steps?.some((step) => {
 		const candidate = step as WorkflowStatusStep;
@@ -169,7 +189,8 @@ export function workflowRecoveryActions(receipt: WorkflowReceipt | undefined): W
 		: []);
 }
 
-export function workflowTerminalOutcomeForResult(result: { timedOut?: boolean; turnBudgetExceeded?: boolean; toolBudgetBlocked?: boolean }): WorkflowTerminalOutcome | undefined {
+export function workflowTerminalOutcomeForResult(result: { timedOut?: boolean; terminationReason?: AsyncStatus["terminationReason"]; turnBudgetExceeded?: boolean; toolBudgetBlocked?: boolean }): WorkflowTerminalOutcome | undefined {
+	if (result.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON) return { state: "paused", reason: result.terminationReason };
 	if (result.timedOut) return { state: "partial", reason: "timeout" };
 	if (result.turnBudgetExceeded || result.toolBudgetBlocked) return { state: "partial", reason: "budget_exhausted" };
 	return undefined;
@@ -203,10 +224,12 @@ export function planWorkflowSettlement(input: {
 	let status = withWorkflowChildren(cloneWorkflowStatus(input.status));
 	let summary = input.summary;
 	let receipt = input.receipt;
+	let terminalOutcome = input.terminalOutcome;
 	let resolution = input.resolution;
 	if (input.receiptPersistenceError) {
 		const diagnostic = `${EVIDENCE_PERSISTENCE_FAILED}: ${input.receiptPersistenceError}`;
-		status = withWorkflowChildren({ ...status, state: "failed", error: diagnostic, activityState: undefined, endedAt: now, lastUpdate: now });
+		status = withWorkflowChildren({ ...status, state: "failed", error: diagnostic, terminationReason: undefined, timedOut: status.terminationReason ? undefined : status.timedOut, activityState: undefined, endedAt: now, lastUpdate: now });
+		if (terminalOutcome?.state === "paused") terminalOutcome = undefined;
 		summary = `${diagnostic} Available child evidence was preserved, but workflow completion was not accepted.`;
 		receipt = undefined;
 		if (!resolution) resolution = classifyWorkflowSettlement(status);
@@ -230,20 +253,24 @@ export function planWorkflowSettlement(input: {
 		error: status.state === "complete" ? undefined : status.error ?? summary,
 		stopped: status.stopped ? true : undefined,
 		activityState: status.activityState,
+		timedOut: status.timedOut,
+		terminationReason: status.terminationReason,
 		workflowChildren: status.workflowChildren,
 		results: input.children,
-		...(input.terminalOutcome ? { terminalOutcome: input.terminalOutcome } : {}),
+		terminalOutcome,
 		...(resolution ? { workflowResolution: resolution, recovery } : {}),
 		...(receipt && input.receiptPath ? { workflowReceipt: { path: input.receiptPath, receipt } } : {}),
 		timestamp: now,
 	};
-	const terminal = status.state === "complete" || status.state === "failed" || status.state === "partial" || status.state === "stopped";
+	const terminal = status.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON || status.state === "complete" || status.state === "failed" || status.state === "partial" || status.state === "stopped";
 	if (!status.workflowReceiptPath) delete publicResult.workflowReceipt;
 	const completionEvent = terminal ? {
 		type: "subagent.workflow.completed",
 		state: status.state,
+		timedOut: status.timedOut,
+		terminationReason: status.terminationReason,
 		...(resolution ? { workflowResolution: resolution } : {}),
-		...(input.terminalOutcome ? { terminalOutcome: input.terminalOutcome } : {}),
+		...(terminalOutcome ? { terminalOutcome } : {}),
 		...(status.error ? { error: status.error } : {}),
 		...(status.activityState ? { activityState: status.activityState } : {}),
 		...input.eventMetadata,

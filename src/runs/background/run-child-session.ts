@@ -9,7 +9,7 @@ import type { Message, StopReason } from "@earendil-works/pi-ai";
 import type { ChildTranscriptWriter } from "../../shared/child-transcript.ts";
 import { SUBAGENT_STOPPED_MESSAGE, SUBAGENT_TIMED_OUT_MESSAGE, extractTextFromContent, extractToolArgsPreview, getFinalOutput, getTerminalAssistantStopReason, hasEmptyTerminalAssistantResponse } from "../../shared/utils.ts";
 import { qualifyModelWithProvider } from "../../shared/model-info.ts";
-import type { EffectsProjection, RuntimeAcknowledgedChildExtensions, SubagentOutputState, ToolBudgetState, Usage } from "../../shared/types.ts";
+import type { EffectsProjection, RuntimeAcknowledgedChildExtensions, SubagentTerminationReason, SubagentOutputState, ToolBudgetState, Usage } from "../../shared/types.ts";
 import {
 	acceptChildWatchdogEvent,
 	applyChildWatchdogMessage,
@@ -28,7 +28,7 @@ import { createReportedChildSessionInput, type InProcessChildLaunch } from "../s
 import { createPartialOutputTracker, formatPartialOutput, type PartialOutputCause } from "../shared/partial-output.ts";
 import { childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../shared/child-session.ts";
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
-import { isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE } from "../shared/active-runtime-timeout.ts";
+import { isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, SUPERVISOR_WAIT_TIMEOUT_REASON } from "../shared/active-runtime-timeout.ts";
 import { formatSteerMessage } from "../shared/subagent-prompt-runtime.ts";
 import type { SteerDeliveryStatus, SteerRequest } from "./control-channel.ts";
 import { takeMatchingAcceptedSteer, unconsumedSteerReason } from "./steering.ts";
@@ -122,6 +122,7 @@ export interface RunChildSessionResult {
 	outputPartial?: boolean;
 	interrupted?: boolean;
 	timedOut?: boolean;
+	terminationReason?: SubagentTerminationReason;
 	stopped?: boolean;
 	observedMutationAttempt?: boolean;
 	structuredOutputToolInvoked?: boolean;
@@ -182,6 +183,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		let interrupted = false;
 		let timedOut = false;
 		const partialOutput = createPartialOutputTracker();
+		let terminationReason: SubagentTerminationReason | undefined;
 		let stopped = false;
 		let observedMutationAttempt = false;
 		let structuredOutputToolInvoked = false;
@@ -391,9 +393,10 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		const clearAllToolTimeouts = (): void => {
 			for (const key of [...activeToolTimeouts.keys()]) removeToolTimeoutKey(key);
 		};
-		const terminateForTimeout = (message: string): void => {
+		const terminateForTimeout = (message: string, reason?: SubagentTerminationReason): void => {
 			if (settled || promptSettled || timedOut || stopped) return;
 			timedOut = true;
+			terminationReason = reason;
 			interrupted = false;
 			error = message;
 			abortChild();
@@ -471,7 +474,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 			input.onChildEvent?.(event);
 
 			if (event.type === "tool_execution_end") {
-				if (event.toolName === "contact_supervisor" && isSupervisorWaitTimeout(event.result)) terminateForTimeout(SUPERVISOR_WAIT_TIMEOUT_MESSAGE);
+				if (event.toolName === "contact_supervisor" && isSupervisorWaitTimeout(event.result)) terminateForTimeout(SUPERVISOR_WAIT_TIMEOUT_MESSAGE, SUPERVISOR_WAIT_TIMEOUT_REASON);
 				clearActiveToolTimeout(event);
 				removeActiveToolCall(event);
 				return;
@@ -494,7 +497,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 
 			if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
 				if (event.type === "tool_result_end") {
-					if ((event.message as { toolName?: string }).toolName === "contact_supervisor" && isSupervisorWaitTimeout(event.message)) terminateForTimeout(SUPERVISOR_WAIT_TIMEOUT_MESSAGE);
+					if ((event.message as { toolName?: string }).toolName === "contact_supervisor" && isSupervisorWaitTimeout(event.message)) terminateForTimeout(SUPERVISOR_WAIT_TIMEOUT_MESSAGE, SUPERVISOR_WAIT_TIMEOUT_REASON);
 					clearActiveToolTimeout(event);
 					removeActiveToolCall({
 						toolCallId: (event.message as { toolCallId?: unknown }).toolCallId ?? event.toolCallId,
@@ -644,6 +647,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 					outputPartial: partialCause && streamedPartial ? true : undefined,
 					interrupted: interrupted || undefined,
 					timedOut: timedOut || undefined,
+					terminationReason,
 					stopped: stopped || undefined,
 					observedMutationAttempt,
 					structuredOutputToolInvoked,
