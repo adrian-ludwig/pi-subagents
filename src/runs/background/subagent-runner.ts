@@ -4422,7 +4422,11 @@ export async function runSubagent(
 						};
 						try {
 							writeParallelHandoffGroup(handoff);
-							const cleanup = cleanupWorktrees(setup, { kind: "preserve", capturedDiffs: captured.diffs, handoffManifestPath: manifestPath });
+							const cleanup = cleanupWorktrees(setup, {
+								kind: "preserve", capturedDiffs: captured.diffs, handoffManifestPath: manifestPath,
+								...(!stopped && parallelResults.some(result => result.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON && !result.stopped && result.sessionFile && fs.existsSync(result.sessionFile))
+									? { cleanupBlocker: "retained child resume requires managed worktree cwd" } : {}),
+							});
 							statusPayload.parallelHandoff = writeParallelHandoffGroup({ ...handoff, cleanup });
 							previousOutput = `${previousOutput}\n\n${formatParallelHandoffReference(statusPayload.parallelHandoff)}`;
 						} catch (error) {
@@ -4799,7 +4803,7 @@ export async function runSubagent(
 							...(handoffWorkflowKey ? { workflowKey: handoffWorkflowKey } : {}),
 							...(handoffChildRunId ? { runId: handoffChildRunId } : {}),
 							...(config.lane ? { lane: config.lane } : {}),
-							status: singleResult.stopped ? "stopped" as const : singleResult.interrupted ? "paused" as const : singleResult.exitCode === 0 ? "completed" as const : "failed" as const,
+							status: singleResult.stopped ? "stopped" as const : singleResult.terminationReason || singleResult.interrupted ? "paused" as const : singleResult.exitCode === 0 ? "completed" as const : "failed" as const,
 							summary: singleResult.output || singleResult.error || "(no output)",
 							...(singleResult.artifactPaths?.outputPath ? { outputPath: singleResult.artifactPaths.outputPath } : {}),
 							...(singleResult.structuredOutput !== undefined ? { structuredOutput: singleResult.structuredOutput } : {}),
@@ -4813,7 +4817,7 @@ export async function runSubagent(
 							kind: "preserve",
 							capturedDiffs: diffs,
 							handoffManifestPath: manifestPath,
-							...(config.parentWorkflowRunId && singleResult.sessionFile && fs.existsSync(singleResult.sessionFile) && !singleResult.stopped
+							...((config.parentWorkflowRunId || (!stopped && singleResult.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON)) && singleResult.sessionFile && fs.existsSync(singleResult.sessionFile) && !singleResult.stopped
 								? { cleanupBlocker: "retained child resume requires managed worktree cwd" }
 								: {}),
 						});
@@ -4930,10 +4934,6 @@ export async function runSubagent(
 	if (!timedOut && !stopped && !interrupted && runDeadlineExpired()) timedOut = true;
 	runTimeout?.dispose();
 	checkpointTimeout?.dispose();
-	const terminationReason = !timedOut && !stopped && !interrupted && !usageBudgetExceeded
-		&& results.some(result => result.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON)
-		&& !results.some(result => !result.skipped && !result.terminationReason && concreteFailureResult(result))
-		? SUPERVISOR_WAIT_TIMEOUT_REASON : undefined;
 	disposeControlInbox();
 	try {
 		closeStopInbox(asyncDir);
@@ -4942,6 +4942,10 @@ export async function runSubagent(
 		appendJsonl(eventsPath, JSON.stringify({ type: "subagent.run.stop_inbox_close_failed", ts: Date.now(), runId: id, message: error instanceof Error ? error.message : String(error) }));
 	}
 	for (const request of consumeStopRequestPayloads(asyncDir)) stopChildStep(request);
+	const terminationReason = !timedOut && !stopped && !interrupted && !usageBudgetExceeded
+		&& results.some(result => result.terminationReason === SUPERVISOR_WAIT_TIMEOUT_REASON)
+		&& !results.some(result => !result.skipped && !result.terminationReason && concreteFailureResult(result))
+		? SUPERVISOR_WAIT_TIMEOUT_REASON : undefined;
 	const signalTerminated = !stopped && !timedOut && !interrupted && results.some((result) => result.exitCode !== 0 && isUnexplainedProcessSignal(omitUndefinedProperties({
 		processSignal: result.processSignal,
 		interrupted: result.interrupted,

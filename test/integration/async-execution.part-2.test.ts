@@ -9,7 +9,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fsDefault, * as fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createTempDir, createEventBus, events, makeAgent, makeMinimalCtx, removeTempDir, resolveMockPiCallArgs } from "../support/helpers.ts";
@@ -1030,6 +1031,116 @@ syncBuiltinESMExports();
 			assert.equal(notices.find(notice => notice.customType === "subagent-incremental-child-notify")?.details?.terminationReason, "timed-out-waiting-on-supervisor");
 		} finally {
 			if (!fs.existsSync(path.join(RESULTS_DIR, `${id}.json`))) await executor.execute("expiry-cleanup", { action: "stop", id }, undefined, undefined, makeMinimalCtx(tempDir));
+		}
+	});
+
+	for (const mode of ["single", "parallel"] as const) it(`preserves paused ${mode === "single" ? "sequential" : "parallel"} async worktree handoff after supervisor expiry`, { timeout: 30000 }, async () => {
+		const repo = createRepo("pi-async-worktree-expiry-");
+		mockPi.onCall({ writeFiles: [{ path: "input.md", content: "waiting changes" }], steps: [
+			{ jsonl: [{ ...events.toolStart("contact_supervisor", { reason: "need_decision" }), toolCallId: "expired" }] },
+			{ jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "expired", result: { content: [{ type: "text", text: "Expired" }], details: { terminationReason: "timed-out-waiting-on-supervisor" } } }] },
+			{ delay: 10000 },
+		] });
+		const worktreeBaseDir = `${repo}-worktrees`;
+		const executor = makeAsyncExecutor([makeAgent("worker")], { worktreeBaseDir, worktreeProvider: "native" });
+		let id: string;
+		if (mode === "single") {
+			const launch = await executor.execute("async-worktree-expiry", { async: true, agent: "worker", task: "Ask", worktree: true, acceptance: false }, undefined, undefined, makeMinimalCtx(repo));
+			id = launch.details.asyncId!;
+			assert.ok(id, JSON.stringify(launch));
+		} else {
+			id = `parallel-worktree-expiry-${Date.now().toString(36)}`;
+			executeAsyncChain(id, {
+				chain: [{ parallel: [{ agent: "worker", task: "Ask", acceptance: false }], worktree: true }], resultMode: "parallel",
+				sessionFilesByFlatIndex: [path.join(tempDir, "sessions", "retained.jsonl")],
+				agents: [makeAgent("worker")], worktreeBaseDir, worktreeProvider: "native",
+				ctx: { pi: { events: { emit() {} } }, cwd: repo, currentSessionId: "session-1" },
+				artifactConfig: { enabled: false, cleanupDays: 7 }, shareEnabled: false, maxSubagentDepth: 2,
+				sessionRoot: path.join(tempDir, "sessions"),
+			});
+		}
+		try {
+			const result = await readAsyncPayload(id);
+			assert.equal(result.terminationReason, "timed-out-waiting-on-supervisor");
+			const status = readStatus(path.join(ASYNC_DIR, id))!;
+			const manifest = JSON.parse(fs.readFileSync(status.parallelHandoff!.path!, "utf8"));
+			const child = manifest.groups[0].children[0];
+			assert.equal(child.status, "paused");
+			assert.equal(child.sessionPath, result.results[0]?.sessionFile);
+			assert.equal(fs.existsSync(child.sessionPath), true);
+			const retained = manifest.groups[0].cleanup.tasks[0];
+			assert.equal(retained.preserved, true);
+			assert.equal(fs.readFileSync(path.join(retained.path, "input.md"), "utf8"), "waiting changes");
+			await waitForAsyncState(id, candidate => candidate.processTerminal?.state === "observed");
+			const { resolveAsyncResumeTarget } = await import("../../src/runs/background/async-resume.ts");
+			const target = resolveAsyncResumeTarget({ id, dir: path.join(ASYNC_DIR, id) }, { index: 0 }, { requireSessionFile: true, sessionId: status.sessionId });
+			assert.equal(target.kind, "revive");
+			assert.equal(target.cwd, retained.path);
+			assert.equal(target.sessionFile, child.sessionPath);
+		} finally {
+			if (!fs.existsSync(path.join(RESULTS_DIR, `${id}.json`))) await executor.execute("worktree-cleanup", { action: "stop", id }, undefined, undefined, makeMinimalCtx(repo));
+			removeTempDir(worktreeBaseDir);
+			removeTempDir(repo);
+		}
+	});
+
+	it("fails initial async workflow settlement when its supervisor-expiry receipt cannot persist", { timeout: 30000 }, async (t) => {
+		mockPi.onCall({ steps: [
+			{ jsonl: [{ ...events.toolStart("contact_supervisor", { reason: "need_decision" }), toolCallId: "expired" }] },
+			{ delay: 1000, jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "expired", result: { content: [{ type: "text", text: "Expired" }], details: { terminationReason: "timed-out-waiting-on-supervisor" } } }] },
+			{ delay: 10000 },
+		] });
+		const executor = makeAsyncExecutor([makeAgent("worker")]);
+		const rename = fsDefault.renameSync;
+		let receiptPath: string | undefined;
+		let failedWrite = false;
+		t.mock.method(fsDefault, "renameSync", (from, to) => {
+			if (String(to) === receiptPath) {
+				failedWrite = true;
+				throw Object.assign(new Error("receipt storage unavailable"), { code: "EIO" });
+			}
+			return rename(from, to);
+		});
+		syncBuiltinESMExports();
+		let id: string | undefined;
+		try {
+			const launch = await executor.execute("workflow-receipt-failure", { async: true, workflowScript: 'return await runs.run("ask", { agent: "worker", task: "Ask", agentContract: { version: 1 } });' }, undefined, undefined, makeMinimalCtx(tempDir));
+			id = launch.details.asyncId!;
+			receiptPath = path.join(launch.details.asyncDir!, "workflow-receipt.json");
+			const result = await readAsyncPayload(id);
+			assert.equal(failedWrite, true);
+			assert.equal(result.state, "failed");
+			assert.equal(result.success, false);
+			assert.equal(result.terminationReason, undefined);
+			assert.equal(result.terminalOutcome, undefined);
+			assert.equal(result.workflowReceipt, undefined);
+			assert.deepEqual(result.recovery, []);
+			assert.match(result.error ?? "", /^evidence-persistence-failed:/);
+			assert.equal(fs.existsSync(receiptPath), false);
+			const status = readStatus(path.join(ASYNC_DIR, id))!;
+			assert.equal(status.state, "failed");
+			assert.equal(status.terminationReason, undefined);
+			assert.equal(status.activityState, undefined);
+			assert.equal(status.workflowReceiptPath, undefined);
+			assert.match(status.error ?? "", /^evidence-persistence-failed:/);
+			assert.equal(result.results[0]?.terminationReason, "timed-out-waiting-on-supervisor");
+			assert.ok(result.results[0]?.sessionFile);
+			assert.equal(fs.existsSync(result.results[0]!.sessionFile!), true);
+			const records = fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+			const completion = records.find(event => event.type === "subagent.workflow.completed");
+			assert.equal(completion?.state, "failed");
+			assert.equal(completion?.terminationReason, undefined);
+			assert.equal(completion?.terminalOutcome, undefined);
+			assert.match(completion?.error ?? "", /^evidence-persistence-failed:/);
+			const { buildCompletionDetails } = await import("../../src/runs/background/notify.ts");
+			const notification = buildCompletionDetails(result);
+			assert.equal(notification.status, "failed");
+			assert.equal(notification.terminationReason, undefined);
+			assert.equal(notification.workflowReceiptPath, undefined);
+		} finally {
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+			if (id && !fs.existsSync(path.join(RESULTS_DIR, `${id}.json`))) await executor.execute("receipt-cleanup", { action: "stop", id }, undefined, undefined, makeMinimalCtx(tempDir));
 		}
 	});
 

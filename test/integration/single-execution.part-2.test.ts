@@ -4648,6 +4648,41 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		assert.ok(readCallArgs().includes(expired.details.results[0]!.sessionFile!));
 	});
 
+	it("preserves paused foreground single worktree handoff after supervisor expiry", { timeout: 30000 }, async () => {
+		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+		execFileSync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+		fs.writeFileSync(path.join(tempDir, "base.txt"), "base\n");
+		execFileSync("git", ["add", "base.txt"], { cwd: tempDir });
+		execFileSync("git", ["commit", "-m", "base"], { cwd: tempDir, stdio: "ignore" });
+		mockPi.onCall({ writeFiles: [{ path: "base.txt", content: "waiting changes" }], steps: [
+			{ jsonl: [{ ...events.toolStart("contact_supervisor", { reason: "need_decision" }), toolCallId: "expired" }] },
+			{ jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "expired", result: { content: [{ type: "text", text: "Expired" }], details: { terminationReason: "timed-out-waiting-on-supervisor" } } }] },
+			{ delay: 10000 },
+		] });
+		const worktreeBaseDir = `${tempDir}-worktrees`;
+		const executor = makeExecutor([makeAgent("worker")], { worktreeBaseDir, worktreeProvider: "native" });
+		try {
+			const result = await executor.execute("worktree-expiry", { async: false, agent: "worker", task: "Ask", worktree: true, acceptance: false }, undefined, undefined, makeMinimalCtx(tempDir));
+			assert.equal(result.details.terminationReason, "timed-out-waiting-on-supervisor", JSON.stringify(result));
+			const manifest = JSON.parse(fs.readFileSync(result.details.parallelHandoff!.path!, "utf8"));
+			const child = manifest.groups[0].children[0];
+			assert.equal(child.status, "paused");
+			assert.equal(child.sessionPath, result.details.results[0]?.sessionFile);
+			assert.equal(fs.existsSync(child.sessionPath), true);
+			const retained = manifest.groups[0].cleanup.tasks[0];
+			assert.equal(retained.preserved, true);
+			assert.equal(fs.readFileSync(path.join(retained.path, "base.txt"), "utf8"), "waiting changes");
+			mockPi.onCall({ output: "Resumed", writeFiles: [{ path: "resumed.txt", content: "continued" }] });
+			const resumed = await executor.execute("worktree-resume", { async: false, workflowScript: `return await runs.run("resumed", { resume: ${JSON.stringify(result.details.runId)}, task: "Proceed", acceptance: false, output: false });` }, undefined, undefined, makeMinimalCtx(tempDir));
+			assert.equal(resumed.isError, undefined, JSON.stringify(resumed));
+			assert.equal(fs.readFileSync(path.join(retained.path, "resumed.txt"), "utf8"), "continued");
+			assert.equal(fs.existsSync(path.join(tempDir, "resumed.txt")), false);
+		} finally {
+			removeTempDir(worktreeBaseDir);
+		}
+	});
+
 	it("workflow host timeout lets active siblings survive the old wall deadline during an owned wait", async () => {
 		const bus = createEventBus();
 		const executor = makeExecutor([makeAgent("worker")], {}, false, undefined, true, new Map(), undefined, undefined, bus);

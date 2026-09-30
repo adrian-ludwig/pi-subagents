@@ -38,6 +38,29 @@ describe("supervisor expiry workflow settlement", () => {
 		assert.equal(settled.steps?.[0]?.terminationReason, terminationReason);
 	});
 
+	it("keeps a stopped sibling authoritative over detached supervisor expiry", () => {
+		const status: AsyncStatus = { runId: "workflow", mode: "workflow", state: "paused", startedAt: 1, steps: [{ agent: "worker", runId: "child", status: "paused", activityState: "needs_attention" }, { agent: "other", status: "stopped", stopped: true, error: "Stopped" }] };
+		const settled = applyDetachedChildSettlement(status, { childRunId: "child", result: { exitCode: 1, terminationReason, timedOut: true, error: "Expired" } })!;
+		assert.equal(settled.state, "failed");
+		assert.equal(settled.terminationReason, undefined);
+		assert.equal(classifyWorkflowSettlement(settled), "interrupted-child");
+		assert.equal(settled.steps?.[0]?.terminationReason, terminationReason);
+	});
+
+	it("does not settle a failed workflow while another detached sibling remains open", () => {
+		const status: AsyncStatus = { runId: "workflow", mode: "workflow", state: "paused", startedAt: 1, steps: [{ agent: "worker", runId: "child", status: "paused", activityState: "needs_attention" }, { agent: "failed", status: "failed", error: "missing output" }, { agent: "open", runId: "open", status: "paused", activityState: "needs_attention" }] };
+		const settled = applyDetachedChildSettlement(status, { childRunId: "child", result: { exitCode: 1, terminationReason, timedOut: true, error: "Expired" } })!;
+		assert.equal(settled.state, "paused");
+		assert.equal(settled.terminationReason, undefined);
+		assert.equal(classifyWorkflowSettlement(settled), undefined);
+		assert.equal(planWorkflowSettlement({ status: settled, summary: "Open", children: [], baseResult: {} }).completionEvent, undefined);
+		const closed = applyDetachedChildSettlement(settled, { childRunId: "open", result: { exitCode: 0 } })!;
+		assert.equal(closed.state, "failed");
+		assert.equal(closed.error, "missing output");
+		assert.equal(closed.terminationReason, undefined);
+		assert.equal(classifyWorkflowSettlement(closed), "failed-child");
+	});
+
 	it("publishes a terminal paused completion and receipt with explicit resume evidence", () => {
 		const terminalOutcome = { state: "paused", reason: terminationReason } as const;
 		const child = { key: "ask", runId: "child", agent: "worker", ok: false, output: "", error: "Expired", artifactPaths: ["/retained.jsonl"], resumability: { state: "resumable" } as const, terminalOutcome };
