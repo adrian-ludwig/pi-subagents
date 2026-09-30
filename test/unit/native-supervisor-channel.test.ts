@@ -1184,6 +1184,18 @@ describe("native supervisor channel", () => {
 		assert.equal(request.childIndex, 3);
 	});
 
+	it("classifies the independent supervisor reply deadline and removes the expired request", async () => {
+		process.env.PI_INTERCOM_ASK_TIMEOUT_MS = "1";
+		const runId = randomUUID();
+		const channelDir = resolveSupervisorChannelDir(runId, "worker", 0);
+		createdChannels.push(channelDir);
+		let execute: (id: string, params: unknown) => Promise<{ details?: Record<string, unknown> }>;
+		registerNativeSupervisorClient({ getAllTools: () => [], registerTool: (tool: { execute: typeof execute }) => { execute = tool.execute; } } as never, { channelDir, runId, agent: "worker", childIndex: 0 });
+		const result = await execute!("expiry", { reason: "need_decision", message: "Question" });
+		assert.equal(result.details?.supervisorWaitTimedOut, true);
+		assert.deepEqual(fs.readdirSync(path.join(channelDir, "requests")), []);
+	});
+
 	it("removes the request file when a child supervisor ask is cancelled", async () => {
 		const runId = `run-${randomUUID()}`;
 		const channelDir = resolveSupervisorChannelDir(runId, "worker", 0);
