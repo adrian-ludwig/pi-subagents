@@ -108,7 +108,7 @@ import {
 import { buildInProcessChildLaunch, createReportedChildSessionInput } from "../shared/child-launch.ts";
 import { childSessionFactory, childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent } from "../shared/child-session.ts";
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
-import { createActiveRuntimeTimeout, isBlockingSupervisorTool, isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
+import { createActiveRuntimeTimeout, emitSupervisorWait, isBlockingSupervisorTool, isSupervisorWaitTimeout, SUPERVISOR_WAIT_TIMEOUT_MESSAGE, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -767,7 +767,7 @@ async function runSingleAttempt(
 			clearWatchdogTailTimer();
 			clearTimeoutTimers();
 			for (const active of activeToolCalls.values()) {
-				if (active.blocksSupervisor) activeTimeout?.setWaiting(active.key, false);
+				if (active.blocksSupervisor) setSupervisorWaiting(active.key, false);
 			}
 			clearAllToolTimeouts();
 			if (activityTimer) {
@@ -805,6 +805,10 @@ async function runSingleAttempt(
 		let pendingToolResult: { tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined;
 		type ActiveToolCall = { attentionEmitted?: boolean; key: string; tool: string; args: string; startedAt: number; path?: string; blocksSupervisor: boolean };
 		let activeToolSequence = 0;
+		const setSupervisorWaiting = (key: string, waiting: boolean) => {
+			activeTimeout?.setWaiting(key, waiting);
+			if (options.runId && options.intercomEvents) emitSupervisorWait(options.intercomEvents, { runId: options.runId, key: `${options.index ?? 0}:${key}`, waiting });
+		};
 		const activeToolCalls = new Map<string, ActiveToolCall>();
 		const activeToolKeysByName = new Map<string, string[]>();
 		const latestActiveToolCall = (): ActiveToolCall | undefined => [...activeToolCalls.values()].sort((left, right) => right.startedAt - left.startedAt)[0];
@@ -834,7 +838,7 @@ async function runSingleAttempt(
 				...(path !== undefined ? { path } : {}),
 			};
 			activeToolCalls.set(key, active);
-			if (active.blocksSupervisor) activeTimeout?.setWaiting(key, true);
+			if (active.blocksSupervisor) setSupervisorWaiting(key, true);
 			const keys = activeToolKeysByName.get(active.tool) ?? [];
 			keys.push(key);
 			activeToolKeysByName.set(active.tool, keys);
@@ -845,7 +849,7 @@ async function runSingleAttempt(
 			const active = activeToolCalls.get(key);
 			if (!active) return undefined;
 			activeToolCalls.delete(key);
-			if (active.blocksSupervisor) activeTimeout?.setWaiting(key, false);
+			if (active.blocksSupervisor) setSupervisorWaiting(key, false);
 			const keys = activeToolKeysByName.get(active.tool)?.filter((candidate) => candidate !== key) ?? [];
 			if (keys.length > 0) activeToolKeysByName.set(active.tool, keys);
 			else activeToolKeysByName.delete(active.tool);
@@ -1143,6 +1147,9 @@ async function runSingleAttempt(
 						if (!evt.message.errorMessage && assistantText.trim()) assistantError = undefined;
 						cleanTerminalAssistantStopReceived ||= !evt.message.errorMessage;
 						clearAllToolTimeouts();
+						for (const active of activeToolCalls.values()) {
+							if (active.blocksSupervisor) setSupervisorWaiting(active.key, false);
+						}
 						activeToolCalls.clear();
 						activeToolKeysByName.clear();
 						refreshCurrentTool();

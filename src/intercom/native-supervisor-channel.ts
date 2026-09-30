@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import type { ChildSupervisorMetadata } from "../runs/shared/child-runtime-config.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT, POLL_INTERVAL_MS, TEMP_ROOT_DIR, type ControlEvent, type IntercomEventBus, type SubagentState } from "../shared/types.ts";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
-import { SUPERVISOR_WAIT_TIMEOUT_MESSAGE } from "../runs/shared/active-runtime-timeout.ts";
+import { emitSupervisorWait, SUPERVISOR_WAIT_TIMEOUT_MESSAGE } from "../runs/shared/active-runtime-timeout.ts";
 
 import { shouldUseNativeFsWatch } from "../shared/watch-strategy.ts";
 import { MODEL_ONLY_TOOL } from "../shared/extension-context.ts";
@@ -671,8 +671,19 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 		requestCorrelations.set(key, { request, state: "resolved", updatedAt: Date.now() });
 		pruneRequestCorrelations();
 	};
+	const emitRequestWait = (request: PendingSupervisorRequest, waiting: boolean) => {
+		const events = (pi as { events?: IntercomEventBus }).events;
+		if (!request.expectsReply || !events) return;
+		emitSupervisorWait(events, {
+			runId: request.runId,
+			key: `${request.childIndex}:${request.toolCallId ? `id:${request.toolCallId}` : request.id}`,
+			waiting,
+		});
+	};
 	const observeRequestLifecycle: SupervisorRequestLifecycleObserver = (request, lifecycle) => {
-		if (lifecycle !== "wrong-session") rememberResolvedRequest(request);
+		if (lifecycle === "wrong-session") return;
+		rememberResolvedRequest(request);
+		emitRequestWait(request, false);
 	};
 	const getSupervisorRequestState = (event: ControlEvent): SupervisorRequestState => {
 		if (event.currentTool === "intercom" || event.index === undefined) return "unknown";
@@ -759,6 +770,7 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 			}
 			rememberPendingRequest(request);
 			pending.set(request.id, request);
+			emitRequestWait(request, true);
 			markForegroundSupervisorAttention(request, state);
 			// The ask is already queued above. A sendMessage failure (no UI, stale context) must not
 			// lose it, and must not abort the loop before the remaining asks register.
@@ -925,6 +937,7 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 			safetyPoller = undefined;
 			if (deferredWatcherRefresh) timers.clearImmediate(deferredWatcherRefresh);
 			deferredWatcherRefresh = undefined;
+			for (const request of pending.values()) emitRequestWait(request, false);
 			pending.clear();
 			requestCorrelations.clear();
 			seenFiles.clear();

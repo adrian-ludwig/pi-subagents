@@ -1,4 +1,28 @@
 import { toolTimeoutCallKey } from "./tool-timeout.ts";
+import type { IntercomEventBus } from "../../shared/types.ts";
+
+export const SUPERVISOR_WAIT_EVENT = "subagent:supervisor-wait";
+export interface SupervisorWaitEvent { runId: string; key: string; waiting: boolean }
+const pendingWaits = new WeakMap<IntercomEventBus, Map<string, SupervisorWaitEvent>>();
+
+export function emitSupervisorWait(events: IntercomEventBus, event: SupervisorWaitEvent): void {
+	let pending = pendingWaits.get(events);
+	if (!pending) { pending = new Map(); pendingWaits.set(events, pending); }
+	const key = JSON.stringify([event.runId, event.key]);
+	if (event.waiting) pending.set(key, { ...event });
+	else pending.delete(key);
+	events.emit(SUPERVISOR_WAIT_EVENT, event);
+}
+
+/** Runtime-owned lifecycle snapshot; replay never probes or discovers filesystem requests. */
+export function supervisorWaitSnapshot(events: IntercomEventBus): SupervisorWaitEvent[] {
+	return [...(pendingWaits.get(events)?.values() ?? [])].map(event => ({ ...event }));
+}
+export function isSupervisorWaitEvent(value: unknown): value is SupervisorWaitEvent {
+	if (!value || typeof value !== "object") return false;
+	const event = value as Partial<SupervisorWaitEvent>;
+	return typeof event.runId === "string" && typeof event.key === "string" && typeof event.waiting === "boolean";
+}
 
 export const SUPERVISOR_WAIT_TIMEOUT_MESSAGE = "Timed out waiting on supervisor.";
 
@@ -69,13 +93,14 @@ export function createSupervisorWaitTracker(onWait: (key: string, waiting: boole
 	};
 	return {
 		observe(event: { type?: string; toolCallId?: unknown; toolName?: string; args?: unknown; message?: unknown }) {
+			const message = event.message as { role?: string; stopReason?: string; content?: Array<{ type?: string }>; toolCallId?: unknown; toolName?: string } | undefined;
+			if (event.type === "message_end" && message?.role === "assistant" && message.stopReason === "stop" && !message.content?.some(part => part.type === "toolCall")) clear();
 			if (event.type === "tool_execution_start" && event.toolName) {
 				const key = toolTimeoutCallKey(event, ++sequence);
 				const blocking = isBlockingSupervisorTool(event.toolName, event.args);
 				calls.set(key, { tool: event.toolName, blocking });
 				if (blocking) onWait(key, true);
 			} else if (event.type === "tool_execution_end" || event.type === "tool_result_end") {
-				const message = event.message as { toolCallId?: unknown; toolName?: string } | undefined;
 				const id = message?.toolCallId ?? event.toolCallId;
 				const tool = message?.toolName ?? event.toolName;
 				const key = typeof id === "string" ? `id:${id}` : [...calls].find(([, call]) => call.tool === tool)?.[0];

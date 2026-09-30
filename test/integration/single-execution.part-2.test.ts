@@ -4626,6 +4626,34 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		assert.ok(readCallArgs().includes(expired.details.results[0]!.sessionFile!));
 	});
 
+	it("workflow host timeout lets active siblings survive the old wall deadline during an owned wait", async () => {
+		const bus = createEventBus();
+		const executor = makeExecutor([makeAgent("worker")], {}, false, undefined, true, new Map(), undefined, undefined, bus);
+		let siblingReachedBoundary = false;
+		mockPi.onCall({ matchArgIncludes: "Wait for decision", steps: [
+			{ jsonl: [{ ...events.toolStart("contact_supervisor", { reason: "need_decision", message: "Question" }), toolCallId: "owned" }] },
+			{ delay: 1600, jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "owned" }] },
+			{ delay: 10000 },
+		] });
+		mockPi.onCall({ matchArgIncludes: "Active sibling", steps: [
+			{ jsonl: [events.toolStart("bash", { command: "work" })] },
+			{ delay: 1400, jsonl: [events.toolEnd("bash"), events.toolStart("read", { path: "boundary" })] },
+			{ delay: 10000 },
+		] });
+		const start = Date.now();
+		const result = await executor.execute("workflow-pause", {
+			async: false, timeoutMs: 1000,
+			workflowScript: `return await runs.all([{ key: "ask", agent: "worker", task: "Wait for decision", acceptance: false, output: false }, { key: "active", agent: "worker", task: "Active sibling", acceptance: false, output: false }]);`,
+		}, undefined, (update) => {
+			const children = update.details.workflowChildren?.children ?? [];
+			if (children.some((child) => child.childId === "active" && child.activity?.currentTool === "read")) siblingReachedBoundary = true;
+		}, makeMinimalCtx(tempDir));
+		assert.equal(siblingReachedBoundary, true, JSON.stringify(result));
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Workflow script timed out after 1000ms/);
+		assert.ok(Date.now() - start >= 1600);
+	});
+
 	it("marks foreground runs that exceed timeoutMs as timed out", async () => {
 		mockPi.onCall({ delay: 10000 });
 		const agents = makeAgentConfigs(["slow"]);
