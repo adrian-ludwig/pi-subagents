@@ -17,6 +17,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { childSessionFactoryModule, setChildSessionFactoryModule } from "../../src/runs/shared/child-session.ts";
 import { createEventBus, createTempDir, events, makeAgent, makeMinimalCtx, removeTempDir } from "../support/helpers.ts";
 import { discoverAgents } from "../../src/agents/agents.ts";
+import { TEMP_ARTIFACTS_DIR } from "../../src/shared/types.ts";
 import { ACTIVE_ASYNC_CAPACITY_DIR, acquireActiveAsyncCapacity, activeAsyncCapacitySessionKey, getActiveAsyncCapacitySnapshot } from "../../src/runs/background/active-async-capacity.ts";
 import { readPendingChainAppendRequests } from "../../src/runs/background/chain-append.ts";
 import { readActiveRunIndex } from "../../src/runs/background/active-run-index.ts";
@@ -209,7 +210,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	for (const terminal of [
 		{ name: "empty text stop", content: [{ type: "text", text: "" }], stopReason: "stop", error: /no output.*empty response/i },
 		{ name: "tool-call-only stop", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "README.md" } }], stopReason: "toolUse", error: /grep failed.*Path not found/i },
-		{ name: "empty text length limit", content: [{ type: "text", text: "" }], stopReason: "length", error: /grep failed.*Path not found/i },
+		{ name: "empty text length limit", content: [{ type: "text", text: "" }], stopReason: "length", error: /stopReason "length".*incomplete/i },
 	]) {
 		it(`background diagnoses ${terminal.name} after an exploratory tool error`, { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 			mockPi.onCall({
@@ -1468,6 +1469,28 @@ export default function() {
 		) as AsyncExecutionResult;
 		assert.equal(rejected.isError, true);
 		assert.match(rejected.content[0]?.text ?? "", /does not allow agent 'planner'/);
+	});
+
+	it("binds retained async resume output claims to the new workflow destination", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		for (const output of [undefined, path.join(tempDir, "new-report.md"), "relative-report.md", false]) {
+			const original = path.join(tempDir, `original-${String(output === false)}-${path.basename(String(output))}.md`);
+			const executor = makeAsyncExecutor([makeAgent("worker")]);
+			mockPi.onCall({ output: "Original implementation report" });
+			const first = await executor.execute("retained-output", { agent: "worker", task: "Implement", async: true, acceptance: false, output: original }, new AbortController().signal, undefined, makeMinimalCtx(tempDir)) as AsyncExecutionResult;
+			assert.ok(first.details.asyncId);
+			assert.equal((await readAsyncPayload(first.details.asyncId)).success, true);
+			mockPi.onCall({ output: "Resumed complete report" });
+			const resumed = await executor.execute("resume-output-workflow", { async: true, mission: false, output: path.join(tempDir, "aggregate.md"), workflowScript: `return runs.run("resume", { resume: ${JSON.stringify(first.details.asyncId)}, task: "Continue", ${output === undefined ? "" : `output: ${JSON.stringify(output)},`} acceptance: false });` }, new AbortController().signal, undefined, makeMinimalCtx(tempDir)) as AsyncExecutionResult;
+			assert.ok(resumed.details.asyncId);
+			const payload = await readAsyncPayload(resumed.details.asyncId);
+			assert.equal(payload.success, true, payload.error);
+			assert.equal(fs.readFileSync(original, "utf-8"), output === undefined ? "Resumed complete report" : "Original implementation report");
+			if (output !== false) {
+				const expected = output === undefined ? original : path.isAbsolute(output) ? output : path.join(TEMP_ARTIFACTS_DIR, "outputs", resumed.details.asyncId, output);
+				assert.equal(fs.readFileSync(expected, "utf-8"), "Resumed complete report");
+				assert.match(payload.results[0]?.output ?? "", /Resumed complete report/);
+			}
+		}
 	});
 
 	it("revives a current workflow child from persisted parent admission authority", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
