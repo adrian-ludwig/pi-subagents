@@ -38,6 +38,9 @@ describe("default factory queued-message probe", () => {
 		const report = "Complete implementation\n```acceptance-report\n" + JSON.stringify({ criteriaSatisfied: [], commandsRun: [{ command: "npm test", result: "passed" }] }) + "\n```";
 		let listener: (event: ChildSessionEvent) => void = () => {};
 		let queued = false;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let releaseTail!: () => void;
+		const tail = new Promise<void>((resolve) => { releaseTail = resolve; });
 		let steer: StepSteerHandler | undefined;
 		const outcomes: string[] = [];
 		const underlying = {
@@ -49,9 +52,14 @@ describe("default factory queued-message probe", () => {
 				await steer?.({ type: "steer", id: "policy", ts: Date.now(), message: "Duplicate policy guidance", mode: "follow_up" });
 				listener({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: report }], stopReason: "stop" } });
 				if (queued) listener({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "```acceptance-report\n{\"criteriaSatisfied\":[],\"commandsRun\":[]}\n```" }], stopReason: "stop" } });
+				for (const mode of ["steer", "follow_up"] as const) {
+					const rejected = await steer?.({ type: "steer", id: mode, ts: Date.now(), message: "Late guidance", mode });
+					assert.equal(rejected?.state, "failed");
+				}
+				await tail;
 			},
 			clearQueue() { queued = false; return { steering: [], followUp: ["Duplicate policy guidance"] }; },
-			abort: async () => {}, steer: async () => { queued = true; }, followUp: async () => { queued = true; },
+			abort: async () => { releaseTail(); }, steer: async () => { queued = true; }, followUp: async () => { queued = true; },
 			messages: [], sessionId: "completed-report",
 		};
 		const factory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => ({
@@ -60,7 +68,7 @@ describe("default factory queued-message probe", () => {
 			resolveCliModel: () => ({}), createAgentSession: async () => ({ session: underlying }),
 		} as unknown as PiCodingAgentModule) });
 		const child = await factory.create({ cwd: process.cwd(), storage: { kind: "memory" }, extensionPaths: [], ambientExtensions: false, hooks: [], noSkills: true, noContextFiles: true, runtime: { fanoutChild: false, depth: 1, waitTool: { enabled: false }, fast: false } as ChildSessionLaunch["runtime"] });
-		const result = await runChildSession({ factory: { create: async () => child, dispose: () => factory.dispose() }, launch: { session: { hooks: [] }, capture: { finalDrainHeld: () => false } } as unknown as InProcessChildLaunch, prompt: "Implement", timeoutMessage: "timeout", appendChildEvent() {}, writeOutputLine() {}, registerSteer(handler) { steer = handler; }, onSteerOutcome(_request, outcome) { outcomes.push(`${outcome.state}: ${outcome.message}`); } });
+		const result = await runChildSession({ factory: { create: async () => child, dispose: () => factory.dispose() }, launch: { session: { hooks: [] }, capture: { finalDrainHeld: () => false } } as unknown as InProcessChildLaunch, prompt: "Implement", timeoutMessage: "timeout", registerTimeout(interrupt) { if (interrupt) timeout = setTimeout(interrupt, 2_000); else if (timeout) clearTimeout(timeout); }, appendChildEvent() {}, writeOutputLine() {}, registerSteer(handler) { steer = handler; }, onSteerOutcome(_request, outcome) { outcomes.push(`${outcome.state}: ${outcome.message}`); } });
 		assert.equal(result.finalOutput, report);
 		assert.equal(result.exitCode, 0);
 		assert.deepEqual(outcomes, ["failed: child completed before consuming follow-up"]);
