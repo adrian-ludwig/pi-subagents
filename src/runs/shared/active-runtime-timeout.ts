@@ -1,3 +1,5 @@
+import { toolTimeoutCallKey } from "./tool-timeout.ts";
+
 export const SUPERVISOR_WAIT_TIMEOUT_MESSAGE = "Timed out waiting on supervisor.";
 
 export function isSupervisorWaitTimeout(result: unknown): boolean {
@@ -51,8 +53,37 @@ export function createActiveRuntimeTimeout(budgetMs: number) {
 			}
 		},
 		remainingMs: () => Math.max(0, remaining - (startedAt === undefined ? 0 : Date.now() - startedAt)),
+		deadlineAt: () => Date.now() + Math.max(0, remaining - (startedAt === undefined ? 0 : Date.now() - startedAt)),
 		dispose() { consume(); onTimeout = undefined; waits.clear(); },
 	};
 }
 
 export type ActiveRuntimeTimeout = ReturnType<typeof createActiveRuntimeTimeout>;
+
+export function createSupervisorWaitTracker(onWait: (key: string, waiting: boolean) => void) {
+	let sequence = 0;
+	const calls = new Map<string, { tool: string; blocking: boolean }>();
+	const clear = () => {
+		for (const [key, call] of calls) if (call.blocking) onWait(key, false);
+		calls.clear();
+	};
+	return {
+		observe(event: { type?: string; toolCallId?: unknown; toolName?: string; args?: unknown; message?: unknown }) {
+			if (event.type === "tool_execution_start" && event.toolName) {
+				const key = toolTimeoutCallKey(event, ++sequence);
+				const blocking = isBlockingSupervisorTool(event.toolName, event.args);
+				calls.set(key, { tool: event.toolName, blocking });
+				if (blocking) onWait(key, true);
+			} else if (event.type === "tool_execution_end" || event.type === "tool_result_end") {
+				const message = event.message as { toolCallId?: unknown; toolName?: string } | undefined;
+				const id = message?.toolCallId ?? event.toolCallId;
+				const tool = message?.toolName ?? event.toolName;
+				const key = typeof id === "string" ? `id:${id}` : [...calls].find(([, call]) => call.tool === tool)?.[0];
+				if (!key) return;
+				if (calls.get(key)?.blocking) onWait(key, false);
+				calls.delete(key);
+			}
+		},
+		dispose: clear,
+	};
+}

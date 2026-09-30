@@ -14,7 +14,7 @@ import {
 	toolTimeoutFromEnv,
 } from "../../src/runs/shared/tool-timeout.ts";
 
-import { createActiveRuntimeTimeout, isBlockingSupervisorTool } from "../../src/runs/shared/active-runtime-timeout.ts";
+import { createActiveRuntimeTimeout, createSupervisorWaitTracker, isBlockingSupervisorTool } from "../../src/runs/shared/active-runtime-timeout.ts";
 
 describe("active runtime timeout", () => {
 	it("keeps the remaining budget across repeated and overlapping waits", (t) => {
@@ -58,6 +58,25 @@ describe("active runtime timeout", () => {
 		clock.dispose();
 		t.mock.timers.tick(1000);
 		assert.equal(expired, 0);
+	});
+
+	it("tracks overlapping call ids, progress and result-only completion without leaking waits", (t) => {
+		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+		let expired = 0;
+		const clock = createActiveRuntimeTimeout(100);
+		clock.start(() => expired++);
+		const tracker = createSupervisorWaitTracker(clock.setWaiting);
+		tracker.observe({ type: "tool_execution_start", toolName: "contact_supervisor", toolCallId: "a", args: { reason: "need_decision" } });
+		tracker.observe({ type: "tool_execution_start", toolName: "contact_supervisor", toolCallId: "progress", args: { reason: "progress_update" } });
+		tracker.observe({ type: "tool_execution_start", toolName: "intercom", toolCallId: "b", args: { action: "ask" } });
+		tracker.observe({ type: "tool_execution_end", toolName: "contact_supervisor", toolCallId: "progress" });
+		tracker.observe({ type: "tool_result_end", message: { toolCallId: "a", toolName: "contact_supervisor" } });
+		t.mock.timers.tick(1000);
+		assert.equal(expired, 0);
+		tracker.dispose();
+		t.mock.timers.tick(100);
+		assert.equal(expired, 1);
+		clock.dispose();
 	});
 
 	it("pauses only blocking coordination, never progress updates", () => {
