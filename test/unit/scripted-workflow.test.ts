@@ -524,9 +524,10 @@ describe("scripted workflow runtime", () => {
 		assert.deepEqual(validateWorkflowScript(`return undefined;`), { ok: true, errors: [] });
 		assert.deepEqual(validateWorkflowScript(`return [void 0, { value: void 0 }];`), { ok: true, errors: [] });
 		assert.deepEqual(validateWorkflowScript(`return [undefined, { value: undefined }];`), { ok: true, errors: [] });
-		const result = validateWorkflowScript(`emit(void 0); emit(undefined); state.set("void", void 0); state.set("undefined", undefined); return [1, , 2];`);
+		assert.deepEqual(validateWorkflowScript(`emit({ optional: undefined, nested: [{ optional: void 0 }] });`), { ok: true, errors: [] });
+		const result = validateWorkflowScript(`emit(void 0); emit(undefined); emit({ values: [undefined] }); state.set("void", void 0); state.set("undefined", undefined); state.set("object", { optional: undefined }); return [1, , 2];`);
 		assert.equal(result.ok, false);
-		assert.equal(result.errors.filter((error) => error.message.includes("undefined is not JSON-representable")).length, 4);
+		assert.equal(result.errors.filter((error) => error.message.includes("undefined is not JSON-representable")).length, 6);
 		assert.ok(result.errors.some((error) => error.message.includes("sparse arrays")));
 	});
 
@@ -1907,6 +1908,28 @@ describe("scripted workflow runtime", () => {
 		});
 	});
 
+	it("omits undefined optional emit fields without losing completed child results", async () => {
+		const result = await runWorkflowScript({
+			script: `
+				const child = await runs.run("review", { agent: "worker", task: "review" });
+				emit({ runId: child.runId, outputPathMapping: child.outputPathMapping,
+					nested: [{ optional: child.outputPathMapping, ok: child.ok }] });
+				emit({ optional: undefined, nested: { optional: void 0 }, value: null });
+				return child.output;
+			`,
+			timeoutMs: 2_000,
+			async launch(key) { return { key, ok: true, runId: "review-run", output: "completed", artifactPaths: [] }; },
+			async status(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
+		});
+
+		assert.deepEqual(result.emits, [
+			{ runId: "review-run", nested: [{ ok: true }] },
+			{ nested: {}, value: null },
+		]);
+		assert.equal(result.value, "completed");
+		assert.equal(result.children[0]?.runId, "review-run");
+	});
+
 	it("omits undefined fields in workflow return objects", async () => {
 		const result = await runWorkflowScript({
 			script: `
@@ -2849,6 +2872,11 @@ describe("scripted workflow runtime", () => {
 	it("rejects non-JSON-safe emitted values without persisting them", async () => {
 		const invalidScripts = [
 			`emit(undefined);`,
+			`const missing = undefined; emit(missing);`,
+			`const missing = undefined; emit({ values: [missing] });`,
+			`emit({ values: [undefined] });`,
+			`emit({ values: [1, , 2] });`,
+			`emit({ optional: undefined, invalid: () => true });`,
 			`emit(NaN);`,
 			`emit(Infinity);`,
 			`emit(new Map([["a", 1]]));`,
