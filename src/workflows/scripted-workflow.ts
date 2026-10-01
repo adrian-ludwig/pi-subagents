@@ -977,11 +977,12 @@ function omitUndefinedWorkflowValues(value, seen = new Set(), normalizeArrayEntr
   if (value === null || typeof value !== "object") return value;
   if (seen.has(value)) return value;
   seen.add(value);
-  const normalized = Array.isArray(value)
-    ? value.map((entry) => entry === undefined && normalizeArrayEntries ? null : omitUndefinedWorkflowValues(entry, seen, normalizeArrayEntries))
-    : isPlainWorkflowObject(value) && Object.getOwnPropertySymbols(value).length === 0
-      ? Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => entry === undefined ? [] : [[key, omitUndefinedWorkflowValues(entry, seen, normalizeArrayEntries)]]))
-      : value;
+  let normalized = value;
+  if (Array.isArray(value)) {
+    normalized = value.map((entry) => entry === undefined && normalizeArrayEntries ? null : omitUndefinedWorkflowValues(entry, seen, normalizeArrayEntries));
+  } else if (isPlainWorkflowObject(value) && Object.getOwnPropertySymbols(value).length === 0) {
+    normalized = Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => entry === undefined ? [] : [[key, omitUndefinedWorkflowValues(entry, seen, normalizeArrayEntries)]]));
+  }
   seen.delete(value);
   return normalized;
 }
@@ -1688,20 +1689,20 @@ function walkAstWithoutShadowedIdentifier(node: unknown, name: string, visit: (n
 	}
 }
 
-function definitelyNonJson(node: AstNode, normalizeUndefined: boolean | "object-fields" = false, objectField = false): string | undefined {
+function definitelyNonJson(node: AstNode, undefinedPolicy: "strict" | "return" | "object-fields" = "strict", objectField = false): string | undefined {
 	if (node.type === "Literal") {
 		if (typeof node.bigint === "string") return "BigInt values are not JSON-representable";
 		if (node.regex !== undefined) return "regular expressions are not JSON-representable";
 		return undefined;
 	}
 	if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") return "functions are not JSON-representable";
-	const allowsUndefined = normalizeUndefined === true || (normalizeUndefined === "object-fields" && objectField);
+	const allowsUndefined = undefinedPolicy === "return" || (undefinedPolicy === "object-fields" && objectField);
 	if (node.type === "Identifier" && node.name === "undefined") return allowsUndefined ? undefined : "undefined is not JSON-representable";
 	if (node.type === "UnaryExpression" && node.operator === "void") return allowsUndefined ? undefined : "undefined is not JSON-representable";
 	if (node.type === "ArrayExpression" && Array.isArray(node.elements)) {
 		if (node.elements.some((entry) => entry === null)) return "sparse arrays are not JSON-representable";
 		for (const entry of node.elements) if (astNode(entry)) {
-			const error = definitelyNonJson(entry, normalizeUndefined);
+			const error = definitelyNonJson(entry, undefinedPolicy);
 			if (error) return error;
 		}
 	}
@@ -1714,7 +1715,7 @@ function definitelyNonJson(node: AstNode, normalizeUndefined: boolean | "object-
 			values.set(key, property.value);
 		}
 		for (const value of values.values()) {
-			const error = definitelyNonJson(value, normalizeUndefined, true);
+			const error = definitelyNonJson(value, undefinedPolicy, true);
 			if (error) return error;
 		}
 	}
@@ -1975,13 +1976,13 @@ export function validateWorkflowScript(script: string, options: WorkflowScriptVa
 				: undefined;
 		if (boundaryValue) {
 			const isEmit = astNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "emit";
-			const message = definitelyNonJson(boundaryValue, isEmit ? "object-fields" : false);
+			const message = definitelyNonJson(boundaryValue, isEmit ? "object-fields" : "strict");
 			if (message) errors.push({ message: `workflowScript boundary value is invalid: ${message}.`, ...nodeLocation(boundaryValue) });
 		}
 	});
 	walkAst(workflowBody, (node) => {
 		if (node.type !== "ReturnStatement" || !astNode(node.argument)) return;
-		const message = definitelyNonJson(node.argument, true);
+		const message = definitelyNonJson(node.argument, "return");
 		if (message) errors.push({ message: `workflowScript boundary value is invalid: ${message}.`, ...nodeLocation(node.argument) });
 	}, false);
 
