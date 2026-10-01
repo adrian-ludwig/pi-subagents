@@ -973,14 +973,14 @@ function unwrapRunsAllResults(value, seen = new Map()) {
   return changed ? Object.fromEntries(entries) : target;
 }
 
-function omitUndefinedWorkflowValues(value, seen = new Set()) {
+function omitUndefinedWorkflowValues(value, seen = new Set(), normalizeArrayEntries = true) {
   if (value === null || typeof value !== "object") return value;
   if (seen.has(value)) return value;
   seen.add(value);
   const normalized = Array.isArray(value)
-    ? value.map((entry) => entry === undefined ? null : omitUndefinedWorkflowValues(entry, seen))
+    ? value.map((entry) => entry === undefined && normalizeArrayEntries ? null : omitUndefinedWorkflowValues(entry, seen, normalizeArrayEntries))
     : isPlainWorkflowObject(value) && Object.getOwnPropertySymbols(value).length === 0
-      ? Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => entry === undefined ? [] : [[key, omitUndefinedWorkflowValues(entry, seen)]]))
+      ? Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => entry === undefined ? [] : [[key, omitUndefinedWorkflowValues(entry, seen, normalizeArrayEntries)]]))
       : value;
   seen.delete(value);
   return normalized;
@@ -1007,7 +1007,7 @@ parentPort.on("message", async (message) => {
   }
   if (message.type !== "start") return;
   try {
-    const sandbox = { runs, Promise: workflowPromise, emit(value) { const emittedValue = unwrapRunsAllResults(value); assertJsonValue(emittedValue); parentPort.postMessage({ type: "emit", value: emittedValue }); }, console: capturedConsole };
+    const sandbox = { runs, Promise: workflowPromise, emit(value) { const emittedValue = omitUndefinedWorkflowValues(unwrapRunsAllResults(value), new Set(), false); assertJsonValue(emittedValue); parentPort.postMessage({ type: "emit", value: emittedValue }); }, console: capturedConsole };
     if (message.stateEnabled) sandbox.state = state;
     const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
     contextObjectPrototype = vm.runInContext("Object.prototype", context);
@@ -1688,15 +1688,16 @@ function walkAstWithoutShadowedIdentifier(node: unknown, name: string, visit: (n
 	}
 }
 
-function definitelyNonJson(node: AstNode, normalizeUndefined = false): string | undefined {
+function definitelyNonJson(node: AstNode, normalizeUndefined: boolean | "object-fields" = false, objectField = false): string | undefined {
 	if (node.type === "Literal") {
 		if (typeof node.bigint === "string") return "BigInt values are not JSON-representable";
 		if (node.regex !== undefined) return "regular expressions are not JSON-representable";
 		return undefined;
 	}
 	if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") return "functions are not JSON-representable";
-	if (node.type === "Identifier" && node.name === "undefined") return normalizeUndefined ? undefined : "undefined is not JSON-representable";
-	if (node.type === "UnaryExpression" && node.operator === "void") return normalizeUndefined ? undefined : "undefined is not JSON-representable";
+	const allowsUndefined = normalizeUndefined === true || (normalizeUndefined === "object-fields" && objectField);
+	if (node.type === "Identifier" && node.name === "undefined") return allowsUndefined ? undefined : "undefined is not JSON-representable";
+	if (node.type === "UnaryExpression" && node.operator === "void") return allowsUndefined ? undefined : "undefined is not JSON-representable";
 	if (node.type === "ArrayExpression" && Array.isArray(node.elements)) {
 		if (node.elements.some((entry) => entry === null)) return "sparse arrays are not JSON-representable";
 		for (const entry of node.elements) if (astNode(entry)) {
@@ -1713,7 +1714,7 @@ function definitelyNonJson(node: AstNode, normalizeUndefined = false): string | 
 			values.set(key, property.value);
 		}
 		for (const value of values.values()) {
-			const error = definitelyNonJson(value, normalizeUndefined);
+			const error = definitelyNonJson(value, normalizeUndefined, true);
 			if (error) return error;
 		}
 	}
@@ -1973,7 +1974,8 @@ export function validateWorkflowScript(script: string, options: WorkflowScriptVa
 				? node.arguments[1]
 				: undefined;
 		if (boundaryValue) {
-			const message = definitelyNonJson(boundaryValue);
+			const isEmit = astNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "emit";
+			const message = definitelyNonJson(boundaryValue, isEmit ? "object-fields" : false);
 			if (message) errors.push({ message: `workflowScript boundary value is invalid: ${message}.`, ...nodeLocation(boundaryValue) });
 		}
 	});
