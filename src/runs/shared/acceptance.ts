@@ -932,6 +932,7 @@ function parseAcceptanceReportSources(
 }
 
 export function stripAcceptanceReport(output: string): string {
+	if (parseAcceptanceReport(output).malformed) return output;
 	const trailingFencePattern = /\n?```(acceptance[-_]report|json|jsonc|json5)\s*\n([\s\S]*?)```\s*/gi;
 	let trailingFence: { index: number; tag: string; body: string } | undefined;
 	for (const match of output.matchAll(trailingFencePattern)) {
