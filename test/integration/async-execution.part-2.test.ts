@@ -1658,6 +1658,7 @@ syncBuiltinESMExports();
 			required: ["value"],
 			properties: { value: { type: "string" } },
 		};
+		const outputPath = path.join(tempDir, "structured-data.json");
 		mockPi.onCall({ structuredOutput: { value: "Alpha structured" } });
 		mockPi.onCall({ output: "used named output" });
 		const id = `async-structured-chain-${Date.now().toString(36)}`;
@@ -1670,6 +1671,8 @@ syncBuiltinESMExports();
 					label: "Produce structured data",
 					as: "data",
 					outputSchema: schema,
+					output: outputPath,
+					outputMode: "file-only",
 				},
 				{ agent: "consumer", task: "Use {outputs.data}", phase: "Use", label: "Consume data" },
 			],
@@ -1684,6 +1687,8 @@ syncBuiltinESMExports();
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
 		const status = await waitForAsyncState(id, (candidate) => candidate.state === "complete");
+		assert.equal(payload.success, true, payload.results[0]?.error);
+		assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, "utf-8")), { value: "Alpha structured" });
 		assert.deepEqual(payload.results[0]?.structuredOutput, { value: "Alpha structured" });
 		assert.deepEqual(payload.outputs?.data?.structured, { value: "Alpha structured" });
 		assert.match(readMockPiArgs(mockPi, 1).at(-1) ?? "", /Alpha structured/);

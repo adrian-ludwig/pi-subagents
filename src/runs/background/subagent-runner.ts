@@ -1304,7 +1304,8 @@ export async function runSingleStepInner(
 		const mutationEvidence = run.nativeMachine ? { source: "tracked-files" as const, trackedOnly: true as const, changedFiles: [], attemptedMutation: remoteGitChanged === true, ...(remoteGitChanged === undefined ? { unavailable: "Remote Git before/after evidence was incomplete." } : {}) } : collectTrackedMutationEvidence(mutationSnapshot, step.cwd ?? ctx.cwd);
 		finalMutationEvidence = mutationEvidence;
 		const mutationAttemptObserved = run.observedMutationAttempt === true || mutationEvidence.attemptedMutation === true;
-		const finalOutputHasPersistableFileContent = run.exitCode === 0 && !run.error && !emptyOutputError && Boolean(stripAcceptanceReport(run.finalOutput).trim());
+		const finalOutputHasPersistableFileContent = run.exitCode === 0 && !run.error && !emptyOutputError
+			&& (validatedStructuredOutput || Boolean(stripAcceptanceReport(run.finalOutput).trim()));
 		const requiredOutput = step.outputMode === "file-only" && step.outputPath
 			? { kind: "file-only" as const, path: step.outputPath, missing: !fs.existsSync(step.outputPath) && !finalOutputHasPersistableFileContent }
 			: effectiveStructuredOutput
