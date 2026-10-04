@@ -3868,7 +3868,7 @@ Answer only from the supplied synthetic text.
 	});
 
 	it("preserves a rejected file-only child report when its path matches workflow output", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
-		const usefulReport = "# Review findings\n\nThe implementation loses the final report.";
+		const usefulReport = `ACCEPTANCE_REPORT: ${JSON.stringify({ criteriaSatisfied: true, commandsRun: ["npm test"] })}`;
 		const sharedOutput = path.join(tempDir, "review.md");
 		mockPi.onCall({ stdoutRaw: `${JSON.stringify(events.assistantMessage(usefulReport))}\n` });
 		const executor = makeExecutor([makeAgent("reviewer", { tools: ["read"] })]);
@@ -3898,7 +3898,7 @@ Answer only from the supplied synthetic text.
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", new RegExp(escapeRegExp(sharedOutput)));
 		assert.equal(result.details.results[0]?.acceptance?.status, "rejected");
-		assert.match(result.details.results[0]?.acceptance?.runtimeChecks[0]?.message ?? "", /Structured acceptance report not found/);
+		assert.match(result.details.results[0]?.acceptance?.runtimeChecks[0]?.message ?? "", /criteriaSatisfied: expected array/);
 		assert.equal(result.details.results[0]?.savedOutputPath, sharedOutput);
 		assert.deepEqual(fs.readFileSync(sharedOutput), Buffer.from(usefulReport));
 	});
