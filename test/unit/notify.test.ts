@@ -111,6 +111,7 @@ it("holds a completion that wakes an idle parent until Pi starts its message", a
 	notifier.messageStarted({ role: "custom", ...(calls[0]![0] as object) } as never);
 	assert.equal(notifier.hasPendingDelivery(), false);
 	notifier.dispose();
+});
 
 it("delivers supervisor expiry as paused with structured completion metadata", () => {
 	const terminationReason = "timed-out-waiting-on-supervisor" as const;
