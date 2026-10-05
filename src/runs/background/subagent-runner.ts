@@ -2999,7 +2999,7 @@ export async function runSubagent(
 		if (waiting) pendingSupervisorWaits.add(ownedKey);
 		else pendingSupervisorWaits.delete(ownedKey);
 		statusPayload.pendingSupervisorWaits = [...pendingSupervisorWaits];
-		writeStatusPayload();
+		writeStatusPayload(false);
 		appendJsonl(eventsPath, JSON.stringify({ type: SUPERVISOR_WAIT_EVENT, runId: id, key: ownedKey, waiting }));
 	};
 	const updateStepFromChildEvent = (flatIndex: number, event: ChildEvent): void => {

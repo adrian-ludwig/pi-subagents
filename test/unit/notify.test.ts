@@ -103,6 +103,7 @@ it("does not wait for message_start on a completion appended to an idle parent",
 	assert.deepEqual(calls.map((call) => call[1]), [{ triggerTurn: false }, { deliverAs: "steer" }]);
 	assert.equal(notifier.hasPendingDelivery(), false, "Pi emits no message_start for an appended notice; the wake prompt holds liveness");
 	notifier.dispose();
+});
 
 it("delivers supervisor expiry as paused with structured completion metadata", () => {
 	const terminationReason = "timed-out-waiting-on-supervisor" as const;
