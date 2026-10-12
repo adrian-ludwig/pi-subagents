@@ -4730,7 +4730,6 @@ export async function runSubagent(
 
 			const stepEndTime = Date.now();
 			const childInterrupted = singleResult.interrupted === true;
-			const childStopped = singleResult.stopped === true;
 			const terminationReason = stopped || childStopped || timedOut ? undefined : singleResult.terminationReason;
 			recordStepResult(flatIndex, singleResult, stepStartTime, stepEndTime);
 			if (stepTokens) {
