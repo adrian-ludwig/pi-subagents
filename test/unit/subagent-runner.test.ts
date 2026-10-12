@@ -41,9 +41,9 @@ it("keeps an accepted final-inbox stop authoritative over supervisor expiry", { 
 			assert.equal(projection.state, "stopped");
 			assert.equal(projection.terminationReason, undefined);
 			assert.equal(projection.activityState, undefined);
-			assert.equal(projection.error, "Subagent stopped by user.");
+			assert.equal(projection.error, "Subagent stopped.");
 		}
-		assert.equal(result.summary, "Subagent stopped by user.");
+		assert.equal(result.summary, "Subagent stopped.");
 		assert.equal(result.results[0].terminationReason, terminationReason);
 		assert.equal(result.results[0].sessionFile, sessionFile);
 		assert.equal(fs.existsSync(sessionFile), true);
