@@ -124,9 +124,9 @@ it("delivers supervisor expiry as paused with structured completion metadata", (
 	try {
 		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, result);
 		assert.equal(sent.length, 1);
-		const message = sent[0]!.message as { details: { completions: SubagentNotifyDetails[] } };
-		assert.equal(message.details.completions[0]?.status, "paused");
-		assert.equal(message.details.completions[0]?.terminationReason, terminationReason);
+		const message = sent[0]!.message as { details: { runs: SubagentNotifyDetails[] } };
+		assert.equal(message.details.runs[0]?.status, "paused");
+		assert.equal(message.details.runs[0]?.terminationReason, terminationReason);
 	} finally { dispose(); }
 });
 
