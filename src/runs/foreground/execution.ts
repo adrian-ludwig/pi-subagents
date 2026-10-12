@@ -1348,7 +1348,7 @@ async function runSingleAttempt(
 		};
 		const terminateForToolTimeout = (message: string): void => {
 			if (sessionSettled || lifecycleFinished || interruptedByControl || result.timedOut) return;
-			clearTimeout(timeoutTimer);
+			activeTimeout?.stop();
 			result.timedOut = true;
 			timeoutCause = message;
 			result.error = message;
