@@ -6253,11 +6253,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 									(deps.parentWake ?? deps.pi).sendMessage(
 										{
 											customType: "subagent-incremental-child-notify",
-											...(notification.result.terminationReason ? { details: { terminationReason: notification.result.terminationReason } } : {}),
 											content: formatIncrementalChildCompletion(notification),
 											display: notification.outcome !== "completed",
 											// Render-only: Pi does not send details to the model.
-											details: { childKey: notification.childKey, outcome: notification.outcome },
+											details: { childKey: notification.childKey, outcome: notification.outcome, ...(notification.result.terminationReason ? { terminationReason: notification.result.terminationReason } : {}) },
 										},
 										{ triggerTurn: incrementalChildCompletionTriggersTurn(notification, requestParams.scheduleOrigin) },
 									);
