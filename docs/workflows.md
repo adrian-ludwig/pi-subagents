@@ -310,8 +310,6 @@ The receipt state is `queued`, `delivered`, `missed`, or `failed`. For an async 
 
 A native Pi child's terminal acceptance report closes its guidance queue. Unconsumed guidance is cleared and reported as failed rather than starting an acknowledgement turn that can replace the report. Further work uses retained resume; children without a terminal acceptance report still accept ordinary continuation.
 
-When a retained child resumes inside another workflow, an omitted child `output` keeps its retained destination. The workflow's aggregate `output` does not override that destination. Set the resumed child's `output` explicitly to choose another path, or set it to `false` to disable persistence.
-
 Always await or return a `runs.steer` promise. The workflow waits for an observed steering side effect to settle before it exits and rejects fire-and-forget calls. Use ordinary `Promise.race` when the first child or steering receipt should advance the script. There is no callback API or child inbox access.
 
 ### Advanced rolling child runs
