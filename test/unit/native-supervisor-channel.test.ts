@@ -1421,7 +1421,9 @@ describe("native supervisor channel", () => {
 		const abandoned = await ask();
 		abandoned.extendBy(400);
 		const started = Date.now();
-		await assert.rejects(abandoned.result, /Timed out waiting for supervisor reply/);
+		const expired = await abandoned.result;
+		assert.equal(expired.content[0]?.text, "Timed out waiting on supervisor.");
+		assert.equal((expired as { details?: { terminationReason?: string } }).details?.terminationReason, "timed-out-waiting-on-supervisor");
 		const waited = Date.now() - started;
 		assert.ok(waited >= 300 && waited < 1500, `a parent that stops extending lets the child time out at the last deadline (waited ${waited} ms)`);
 	});
