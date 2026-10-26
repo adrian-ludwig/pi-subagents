@@ -5022,8 +5022,9 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 			assert.equal(receipt.entries.ask.resumability.state, "resumable");
 		}
 		const { DIRS } = await import("../../src/shared/types.ts");
-		const history = JSON.parse(fs.readFileSync(path.join(DIRS.results, "foreground-history.json"), "utf-8"));
-		const retained = history.runs.find((run: { runId: string }) => run.runId === runId)?.children[0];
+		const { encodeIndexSegment } = await import("../../src/runs/background/index-segment.ts");
+		const history = JSON.parse(fs.readFileSync(path.join(DIRS.results, "foreground-history", `${encodeIndexSegment(runId)}.json`), "utf-8"));
+		const retained = history.children[0];
 		assert.equal(retained.status, "paused");
 		assert.equal(retained.terminationReason, "timed-out-waiting-on-supervisor");
 		assert.equal(retained.activityState, "needs_attention");
