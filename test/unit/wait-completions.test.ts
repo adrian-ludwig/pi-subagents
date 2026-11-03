@@ -283,6 +283,19 @@ describe("workflow wait completion projection", () => {
 		assert.equal(completion.results?.[0]?.structuredOutputPath, "/runs/structured-output/output.json");
 	});
 
+	it("retains a known final stop reason and drops an unknown one", () => {
+		const completion = toWaitCompletion({
+			success: false,
+			results: [
+				{ agent: "worker", success: false, stopReason: "length" },
+				{ agent: "reviewer", success: true, stopReason: "unexpected" },
+			],
+		}, "run-stop-reason");
+
+		assert.equal(completion.results?.[0]?.stopReason, "length");
+		assert.equal(completion.results?.[1]?.stopReason, undefined);
+	});
+
 	it("omits oversized structured output while retaining its artifact path", () => {
 		const completion = toWaitCompletion({
 			success: true,

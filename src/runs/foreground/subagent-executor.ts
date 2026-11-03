@@ -3507,6 +3507,7 @@ function importWorkflowAwaitedChildResult(
 		...(completed.sessionFile ? { sessionFile: completed.sessionFile } : {}),
 		...(completed.model ? { model: completed.model } : {}),
 		...(completed.requestedModel ? { requestedModel: completed.requestedModel } : {}),
+		...(completed.stopReason ? { stopReason: completed.stopReason } : {}),
 		...(completed.contextOverflow ? { contextOverflow: true } : {}),
 		...(completed.structuredOutput !== undefined ? { structuredOutput: completed.structuredOutput } : {}),
 		...(completed.structuredOutputPath ? { structuredOutputPath: completed.structuredOutputPath } : {}),

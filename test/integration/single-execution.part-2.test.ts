@@ -3103,7 +3103,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 
 	it("treats agent_settled as a clean terminal watermark", async () => {
 		const nonTerminalMessage = events.assistantMessage("settled without a terminal assistant stop") as { message: { stopReason: string } };
-		nonTerminalMessage.message.stopReason = "length";
+		nonTerminalMessage.message.stopReason = "toolUse";
 		mockPi.onCall({ jsonl: [nonTerminalMessage, { type: "agent_settled" }], keepAliveAfterFinalMessageMs: 5000 });
 		const startedAt = Date.now();
 		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Wait until settled", { acceptance: false });
@@ -3111,6 +3111,30 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		assert.equal(result.error, undefined);
 		assert.equal(getFinalOutput(result.messages), "settled without a terminal assistant stop");
 		assert.ok(Date.now() - startedAt < 4000, "agent_settled should trigger bounded child cleanup");
+	});
+
+	it("fails a settled child whose final assistant response hit the length limit", async () => {
+		const lengthMessage = events.assistantMessage("partial response") as { message: { stopReason: string } };
+		lengthMessage.message.stopReason = "length";
+		mockPi.onCall({ jsonl: [lengthMessage, { type: "agent_settled" }], keepAliveAfterFinalMessageMs: 5000 });
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Wait until settled", { acceptance: false });
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.stopReason, "length");
+		assert.match(result.error ?? "", /stopReason "length"/);
+		assert.equal(result.finalOutput, "partial response");
+	});
+
+	it("fails a workflow child whose final assistant response hit the length limit", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const lengthMessage = events.assistantMessage("partial workflow response") as { message: { stopReason: string } };
+		lengthMessage.message.stopReason = "length";
+		mockPi.onCall({ jsonl: [lengthMessage, { type: "agent_settled" }], keepAliveAfterFinalMessageMs: 5000 });
+		const result = await makeExecutor([makeAgent("echo")]).execute("workflow-length-stop", {
+			async: false,
+			workflowScript: `return runs.run("writer", { agent: "echo", task: "Write", acceptance: false, output: false });`,
+		}, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		assert.equal(result.isError, true);
+		assert.match(result.content.map((part) => part.text ?? "").join("\n"), /Run 'writer' failed: Subagent ended with stopReason "length"[\s\S]*partial workflow response/);
+		assert.equal(result.details.results[0]?.stopReason, "length");
 	});
 
 	it("tracks usage from message events", async () => {

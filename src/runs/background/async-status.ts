@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { StopReason } from "@earendil-works/pi-ai";
 import { formatDuration, formatModelThinking, formatTokens, shortenPath } from "../../shared/formatters.ts";
 import { previewDisplayText } from "../../shared/display-text.ts";
 import { formatActivityLabel, formatParallelOutcome } from "../../shared/status-format.ts";
@@ -71,6 +72,7 @@ interface AsyncRunStepSummary {
 	contextLimit?: number;
 	thinking?: string;
 	requestedModel?: string;
+	stopReason?: StopReason;
 	sessionFile?: string;
 	transcriptPath?: string;
 	error?: string;
@@ -394,6 +396,7 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 			...(stepThinking ? { thinking: stepThinking } : {}),
 			...(step.thinkingCeiling ? { thinkingCeiling: step.thinkingCeiling } : {}),
 			...(step.requestedModel ? { requestedModel: step.requestedModel } : {}),
+			...(step.stopReason ? { stopReason: step.stopReason } : {}),
 			...(step.sessionFile ? { sessionFile: step.sessionFile } : {}),
 			...(step.transcriptPath ? { transcriptPath: step.transcriptPath } : {}),
 			...(step.error ? { error: step.error } : {}),
