@@ -6,6 +6,7 @@ import { afterEach, describe, it } from "node:test";
 import { writeAtomicJson, writePrivateAtomicJson } from "../../src/shared/atomic-json.ts";
 import { closeSteerInbox, interruptRequestPath, steerRequestsDir, type SteerRequest } from "../../src/runs/background/control-channel.ts";
 import { steerAsyncRun } from "../../src/runs/foreground/async-steering-action.ts";
+import { GUIDANCE_CLOSED_BY_REPORT_MESSAGE } from "../../src/runs/shared/child-session.ts";
 import { createSteeringStatus, recordSteeringRequest, updateSteeringTarget } from "../../src/runs/background/steering.ts";
 import { createRunFanoutBudget } from "../../src/runs/shared/run-fanout-budget.ts";
 import { ASYNC_DIR, type AsyncStatus, type Details, type SteeringRecoveryDescriptor, type SteeringTargetState, type SubagentState } from "../../src/shared/types.ts";
@@ -112,8 +113,8 @@ function runningStatus(runId: string, mode: AsyncStatus["mode"] = "single", coun
 	};
 }
 
-function projectRequest(status: AsyncStatus, request: SteerRequest, states: SteeringTargetState[]): void {
-	const targets = states.map((state, index) => ({ index, state }));
+function projectRequest(status: AsyncStatus, request: SteerRequest, states: SteeringTargetState[], reason?: string): void {
+	const targets = states.map((state, index) => ({ index, state, ...(reason ? { reason } : {}) }));
 	status.steering ??= createSteeringStatus();
 	recordSteeringRequest(status.steering, { id: request.id, requestedAt: request.ts, source: request.source, message: request.message, targets });
 	for (const target of targets) {
@@ -646,6 +647,35 @@ describe("acknowledged steering action", () => {
 			removeAsyncDir(asyncDir);
 		}
 	});
+
+	for (const stage of ["before-wait", "before-claim", "after-claim"]) {
+		it(`does not recover guidance refused after the acceptance report ${stage}`, async () => {
+			const runId = `steer-rejected-${stage}-${Date.now().toString(36)}`;
+			const asyncDir = path.join(ASYNC_DIR, runId);
+			writeStatus(asyncDir, runningStatus(runId));
+			let request!: SteerRequest;
+			let recovered = false;
+			const reject = () => {
+				const status = runningStatus(runId);
+				projectRequest(status, request, ["failed"], GUIDANCE_CLOSED_BY_REPORT_MESSAGE);
+				writeStatus(asyncDir, status);
+			};
+			try {
+				const result = await steerAsyncRun({
+					state: createState(), runId, message: "Late guidance", location: { asyncDir }, ackTimeoutMs: 10, recoveryTimeoutMs: 50, kill: () => true,
+					onRequestQueued(requestPath) { request = JSON.parse(fs.readFileSync(requestPath, "utf-8")); if (stage === "before-wait") reject(); },
+					onBeforeRecoveryClaim() { if (stage === "before-claim") reject(); },
+					onRecoveryCommitted() { if (stage === "after-claim") reject(); },
+					recover: async () => { recovered = true; return successResult("replacement"); },
+				});
+				assert.equal(result.isError, true);
+				assert.equal(result.details.steering?.targets[0]?.reason, GUIDANCE_CLOSED_BY_REPORT_MESSAGE);
+				assert.equal(recovered, false);
+				assert.equal(fs.existsSync(interruptRequestPath(asyncDir)), false);
+				assert.equal(fs.existsSync(path.join(asyncDir, "control", "steer-recovery", "claim.json")), false);
+			} finally { removeAsyncDir(asyncDir); }
+		});
+	}
 
 	it("leaves a single run paused when no session can be revived", async () => {
 		const runId = `steer-no-session-${Date.now().toString(36)}`;

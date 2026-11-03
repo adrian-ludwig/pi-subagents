@@ -16,12 +16,15 @@ import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult
 import { CHILD_COMMAND_TOOL, createChildCommandRuntime } from "./child-commands.ts";
 import { supervisorChannelDir } from "./child-tool-plan.ts";
 import { pinChildCacheRetention } from "../../shared/child-cache-retention.ts";
-import { getAgentDir, PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../shared/utils.ts";
+import { parseAcceptanceReport } from "./acceptance.ts";
+import { extractTextFromContent, getAgentDir, PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../shared/utils.ts";
 import { resolvePackageSubpath } from "../background/runner-aliases.ts";
 import { PI_CODING_AGENT_PACKAGE, resolveHostPiPackageRoot } from "./pi-spawn.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import type { RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
 import type { PlacementMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
+
+export const GUIDANCE_CLOSED_BY_REPORT_MESSAGE = "Child completed its acceptance report; resume it for further guidance.";
 
 export interface ChildSessionEvent {
 	type: string;
@@ -704,12 +707,36 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				mcpWaits.set(cancel, ready);
 				try { await ready; } finally { mcpWaits.delete(cancel); }
 			}
+			// An acceptance report ends the child's work. Guidance queued behind it would start a new
+			// turn whose answer replaces the report, so drop it and refuse more until an explicit resume.
+			let reportCompleted = false;
+			const assertAcceptsGuidance = (): void => {
+				if (reportCompleted) throw new Error(GUIDANCE_CLOSED_BY_REPORT_MESSAGE);
+			};
+			// Pi runs input handlers before it queues guidance, so a report can land while a call is in flight.
+			const queueGuidance = async (queue: () => Promise<unknown>): Promise<void> => {
+				assertAcceptsGuidance();
+				await queue();
+				if (reportCompleted) {
+					session.clearQueue();
+					assertAcceptsGuidance();
+				}
+			};
 			const child: ChildSession = {
-				subscribe: (listener) => session.subscribe((event) => listener(event as unknown as ChildSessionEvent)),
+				subscribe: (listener) => session.subscribe((event) => {
+					if (!reportCompleted && event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "stop") {
+						const report = parseAcceptanceReport(extractTextFromContent(event.message.content));
+						if (report.report || report.malformed) {
+							reportCompleted = true;
+							session.clearQueue();
+						}
+					}
+					listener(event as unknown as ChildSessionEvent);
+				}),
 				prompt: (text) => session.prompt(text),
 				...(commands ? { finishCommands: () => commands.finish() } : {}),
-				steer: async (text) => { await session.steer(text); },
-				followUp: async (text) => { await session.followUp(text); },
+				steer: (text) => queueGuidance(() => session.steer(text)),
+				followUp: (text) => queueGuidance(() => session.followUp(text)),
 				abort: () => session.abort(),
 				hasQueuedMessages: () => session.agent?.hasQueuedMessages?.() === true,
 				dispose: () => {
