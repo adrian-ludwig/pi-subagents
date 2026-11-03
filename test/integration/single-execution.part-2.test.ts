@@ -4967,6 +4967,32 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		// Exit code is platform-dependent (Windows: often 1 or 0, Linux: null/143)
 	});
 
+	for (const reason of ["need_decision", "interview_request", "progress_update"] as const) {
+		it(`foreground active timeout excludes ${reason} only when blocking`, async () => {
+			mockPi.onCall({ steps: [
+				{ delay: 40, jsonl: [{ ...events.toolStart("contact_supervisor", { reason, message: "Question" }), toolCallId: "ask-1" }] },
+				{ delay: 1200, jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "ask-1" }] },
+				{ delay: 40, jsonl: [{ ...events.toolStart("contact_supervisor", { reason, message: "Another" }), toolCallId: "ask-2" }] },
+				{ delay: 1200, jsonl: [{ ...events.toolEnd("contact_supervisor"), toolCallId: "ask-2" }] },
+				{ delay: 40, jsonl: [events.assistantMessage("Done")] },
+			] });
+			const result = await runSync(tempDir, makeAgentConfigs(["worker"]), "worker", "Task", { timeoutMs: 1000, acceptance: false });
+			assert.equal(result.timedOut === true, reason === "progress_update");
+			assert.equal(result.exitCode, reason === "progress_update" ? 1 : 0);
+		});
+	}
+
+	it("foreground resumes the remaining budget rather than resetting after a reply", async () => {
+		mockPi.onCall({ steps: [
+			{ delay: 600, jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Question" })] },
+			{ delay: 1200, jsonl: [events.toolEnd("contact_supervisor")] },
+			{ delay: 600, jsonl: [events.assistantMessage("Too late")] },
+		] });
+		const result = await runSync(tempDir, makeAgentConfigs(["worker"]), "worker", "Task", { timeoutMs: 1000, acceptance: false });
+		assert.equal(result.timedOut, true);
+		assert.equal(result.error, "Subagent timed out after 1000ms.");
+	});
+
 	it("marks foreground runs that exceed timeoutMs as timed out", async () => {
 		mockPi.onCall({ delay: 10000 });
 		const agents = makeAgentConfigs(["slow"]);

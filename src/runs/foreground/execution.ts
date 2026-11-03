@@ -110,6 +110,7 @@ import { childSessionFactory, childSessionHasQueuedMessages, projectChildSession
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
 import { clearProviderRetry, observeProviderDiagnostics, snapshotProviderDiagnostics } from "../../shared/provider-diagnostics.ts";
 import { isRexLocalMachine } from "../shared/rex-machine.ts";
+import { createActiveRuntimeTimeout, isBlockingSupervisorTool, type ActiveRuntimeTimeout } from "../shared/active-runtime-timeout.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -366,6 +367,7 @@ async function runSingleAttempt(
 		launchWarnings: { emitted: boolean };
 		verifyModel: boolean;
 		providerDiagnostics?: SingleResult["providerDiagnostics"];
+		activeTimeout?: ActiveRuntimeTimeout;
 	},
 ): Promise<SingleResult> {
 	const effectiveThinking = options.thinkingOverride ?? agent.thinking;
@@ -537,7 +539,10 @@ async function runSingleAttempt(
 		if (cacheWriteUsageComplete) progress.cacheWrite = result.usage.cacheWrite;
 		else delete progress.cacheWrite;
 	};
-	const attemptTimeout = resolveAttemptTimeout(options);
+	const resolvedTimeout = resolveAttemptTimeout(options);
+	const attemptTimeout = resolvedTimeout && shared.activeTimeout
+		? { ...resolvedTimeout, remainingMs: shared.activeTimeout.remainingMs() }
+		: resolvedTimeout;
 	let timeoutCause: string | undefined;
 	if (attemptTimeout?.remainingMs === 0) {
 		result.exitCode = 1;
@@ -597,13 +602,10 @@ async function runSingleAttempt(
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
-		let timeoutTimer: NodeJS.Timeout | undefined;
+		const activeTimeout = shared.activeTimeout;
 		let timeoutHardFinishTimer: NodeJS.Timeout | undefined;
 		const clearTimeoutTimers = () => {
-			if (timeoutTimer) {
-				clearTimeout(timeoutTimer);
-				timeoutTimer = undefined;
-			}
+			activeTimeout?.stop();
 			if (timeoutHardFinishTimer) {
 				clearTimeout(timeoutHardFinishTimer);
 				timeoutHardFinishTimer = undefined;
@@ -788,6 +790,9 @@ async function runSingleAttempt(
 			clearFinalDrainTimers();
 			clearWatchdogTailTimer();
 			clearTimeoutTimers();
+			for (const active of activeToolCalls.values()) {
+				if (active.blocksSupervisor) activeTimeout?.setWaiting(active.key, false);
+			}
 			clearAllToolTimeouts();
 			if (activityTimer) {
 				clearInterval(activityTimer);
@@ -826,7 +831,7 @@ async function runSingleAttempt(
 		// so results are matched to their call by toolCallId; the last-started slot covers events without one.
 		const pendingToolResultsByCallId = new Map<string, PendingToolResult>();
 		let pendingToolResult: PendingToolResult | undefined;
-		type ActiveToolCall = { attentionEmitted?: boolean; key: string; tool: string; args: string; startedAt: number; path?: string };
+		type ActiveToolCall = { attentionEmitted?: boolean; key: string; tool: string; args: string; startedAt: number; path?: string; blocksSupervisor: boolean };
 		let activeToolSequence = 0;
 		const activeToolCalls = new Map<string, ActiveToolCall>();
 		const activeToolKeysByName = new Map<string, string[]>();
@@ -853,9 +858,11 @@ async function runSingleAttempt(
 				tool: event.toolName,
 				args: extractToolArgsPreview(args),
 				startedAt: now,
+				blocksSupervisor: isBlockingSupervisorTool(event.toolName, args),
 				...(path !== undefined ? { path } : {}),
 			};
 			activeToolCalls.set(key, active);
+			if (active.blocksSupervisor) activeTimeout?.setWaiting(key, true);
 			const keys = activeToolKeysByName.get(active.tool) ?? [];
 			keys.push(key);
 			activeToolKeysByName.set(active.tool, keys);
@@ -866,6 +873,7 @@ async function runSingleAttempt(
 			const active = activeToolCalls.get(key);
 			if (!active) return undefined;
 			activeToolCalls.delete(key);
+			if (active.blocksSupervisor) activeTimeout?.setWaiting(key, false);
 			const keys = activeToolKeysByName.get(active.tool)?.filter((candidate) => candidate !== key) ?? [];
 			if (keys.length > 0) activeToolKeysByName.set(active.tool, keys);
 			else activeToolKeysByName.delete(active.tool);
@@ -1249,7 +1257,7 @@ async function runSingleAttempt(
 		}
 
 		if (attemptTimeout) {
-			timeoutTimer = setTimeout(() => {
+			activeTimeout?.start(() => {
 				if (sessionSettled || lifecycleFinished || interruptedByControl || result.timedOut) return;
 				result.timedOut = true;
 				timeoutCause = attemptTimeout.message;
@@ -1266,8 +1274,7 @@ async function runSingleAttempt(
 					settle(undefined, true);
 				}, 4000);
 				timeoutHardFinishTimer.unref?.();
-			}, attemptTimeout.remainingMs);
-			timeoutTimer.unref?.();
+			});
 		}
 
 		let toolTimeoutSequence = 0;
@@ -1302,7 +1309,7 @@ async function runSingleAttempt(
 		};
 		const terminateForToolTimeout = (message: string): void => {
 			if (sessionSettled || lifecycleFinished || interruptedByControl || result.timedOut) return;
-			clearTimeout(timeoutTimer);
+			activeTimeout?.stop();
 			result.timedOut = true;
 			timeoutCause = message;
 			result.error = message;
@@ -1321,8 +1328,7 @@ async function runSingleAttempt(
 		const armToolTimeout = (event: { toolCallId?: unknown; toolName: string }): void => {
 			const timeoutForTool = effectiveToolTimeoutMs(event.toolName, options.toolTimeoutMs);
 			if (timeoutForTool === undefined) return;
-			const elapsed = Date.now() - startTime;
-			const runRemaining = attemptTimeout ? Math.max(0, attemptTimeout.remainingMs - elapsed) : undefined;
+			const runRemaining = activeTimeout?.remainingMs();
 			if (runRemaining !== undefined && timeoutForTool >= runRemaining) return;
 			const key = toolTimeoutCallKey(event, ++toolTimeoutSequence);
 			const toolName = event.toolName;
@@ -1930,6 +1936,7 @@ async function runSyncCompletionInner(
 
 	let detachedReason: string | undefined;
 	const logicalDeadline = options.deadlineAt ?? (options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs);
+	const activeTimeout = logicalDeadline === undefined ? undefined : createActiveRuntimeTimeout(logicalDeadline - Date.now());
 	const attemptOptions: RunSyncOptions = {
 		...options,
 		deadlineAt: logicalDeadline,
@@ -1985,6 +1992,7 @@ async function runSyncCompletionInner(
 			launchWarnings,
 			verifyModel,
 			providerDiagnostics: lastResult?.providerDiagnostics,
+			activeTimeout,
 		});
 		lastResult = attemptResult;
 		sumUsage(aggregateUsage, attemptResult.usage);
@@ -2017,6 +2025,7 @@ async function runSyncCompletionInner(
 		}
 		break;
 	}
+	activeTimeout?.dispose();
 	if (!lastResult) throw new Error("Subagent did not produce a result.");
 	if (isContextOverflow(lastResult.error)) lastResult.contextOverflow = true;
 
