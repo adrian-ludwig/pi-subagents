@@ -1039,6 +1039,22 @@ describe("scripted workflow runtime", () => {
 		assert.deepEqual((result.value as WorkflowScriptChildResult[]).map(({ ok, error }) => ({ ok, error })), [{ ok: true, error: undefined }, { ok: false, error: "This operation was aborted" }]);
 	});
 
+it("stops a started child at its deadline even when the child's own timeout has not fired", async () => {
+		const result = await runWorkflowScript({
+			script: `return await runs.run("paused", { agent: "worker", task: "waits on its supervisor", timeoutMs: 600000, deadlineAt: Date.now() + 100 }).then(() => "finished", (error) => error.message);`,
+			launch(key, _params, signal) {
+				return new Promise((resolve) => signal.addEventListener("abort", () => {
+					const text = signal.reason instanceof Error ? signal.reason.message : String(signal.reason);
+					resolve({ key, ok: false, output: text, error: text, artifactPaths: [] });
+				}, { once: true }));
+			},
+			async status(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
+			timeoutMs: 5_000,
+		});
+
+		assert.match(String(result.value), /Run 'paused' was stopped: its deadline passed\./);
+	});
+
 	it("rejects a child deadlineAt that is not an epoch-millisecond integer", async () => {
 		const result = await runWorkflowScript({
 			script: `return await runs.run("bad", { agent: "worker", task: "run", deadlineAt: 1.5 }).then(() => "launched", (error) => error.message);`,

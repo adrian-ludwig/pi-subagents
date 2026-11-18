@@ -1914,6 +1914,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 					}
 				}
 				await launchSemaphore.acquire();
+				let deadlineStop: ReturnType<typeof setTimeout> | undefined;
 				try {
 					if (settled || finishing || stoppedLaunches.has(key) || childSignal.aborted) {
 						const reason = childSignal.reason;
@@ -1922,6 +1923,8 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 					}
 					const launchParams = boundByChildDeadline(resolvedResumeId ? { ...params, resume: resolvedResumeId } : params, Date.now());
 					if (!launchParams) throw new Error(`Run '${key}' was not started: its deadline passed while it waited for a launch slot.`);
+					// The run timeout pauses while a child waits on its supervisor; the deadline does not.
+					if (typeof params.deadlineAt === "number") deadlineStop = setTimeout(() => childStopController.abort(new Error(`Run '${key}' was stopped: its deadline passed.`)), params.deadlineAt - Date.now());
 					acquiredLaunches.add(key);
 					const result = await options.launch(key, launchParams, childSignal, { admitted: true, batch: batch !== undefined });
 					const resumeParams = setupAbortResumeParams(params, result, childSignal);
@@ -1932,6 +1935,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 					traceChanged();
 					return options.launch(key, autoResumeParams, childSignal, { admitted: true, batch: batch !== undefined });
 				} finally {
+					clearTimeout(deadlineStop);
 					launchSemaphore.release();
 				}
 			}, (error: unknown) => {
