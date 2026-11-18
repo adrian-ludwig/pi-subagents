@@ -1271,12 +1271,11 @@ function isZeroUsage(usage: unknown): boolean {
 		&& (!isRecord(cost) || (cost.total ?? 0) === 0);
 }
 
-/** A child's `deadlineAt` is absolute so time spent waiting for a launch slot counts against it: the slot holder
- *  starts no child past it and gives the child the time left as its timeout, or its own shorter one. */
+// deadlineAt is absolute so time spent waiting for a launch slot counts against it.
 function boundByChildDeadline(params: Record<string, unknown>, now: number): Record<string, unknown> | undefined {
-	if (params.deadlineAt === undefined) return params;
 	const { deadlineAt, maxRuntimeMs, ...rest } = params;
-	const remainingMs = (deadlineAt as number) - now;
+	if (typeof deadlineAt !== "number") return params;
+	const remainingMs = deadlineAt - now;
 	if (remainingMs <= 0) return undefined;
 	const ownTimeoutMs = rest.timeoutMs ?? maxRuntimeMs;
 	return { ...rest, timeoutMs: typeof ownTimeoutMs === "number" ? Math.min(ownTimeoutMs, remainingMs) : remainingMs };
@@ -1922,10 +1921,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 						return stoppedChildResult(key, text);
 					}
 					const launchParams = boundByChildDeadline(resolvedResumeId ? { ...params, resume: resolvedResumeId } : params, Date.now());
-					if (!launchParams) {
-						const text = `Run '${key}' was not started: its deadline passed while it waited for a launch slot.`;
-						return { key, ok: false, output: text, error: text, artifactPaths: [] };
-					}
+					if (!launchParams) throw new Error(`Run '${key}' was not started: its deadline passed while it waited for a launch slot.`);
 					acquiredLaunches.add(key);
 					const result = await options.launch(key, launchParams, childSignal, { admitted: true, batch: batch !== undefined });
 					const resumeParams = setupAbortResumeParams(params, result, childSignal);
