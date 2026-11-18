@@ -1259,7 +1259,7 @@ function resolveWorkflowParserEntry(): string {
 	}
 }
 
-const AUTO_RESUME_PARAM_KEYS = ["acceptance", "agentContract", "baseRef", "index", "intercomBridge", "label", "lane", "maxRuntimeMs", "output", "outputMode", "outputSchema", "phase", "skill", "skills", "task", "timeoutMs", "toolBudget", "worktree"] as const;
+const AUTO_RESUME_PARAM_KEYS = ["acceptance", "agentContract", "baseRef", "deadlineAt", "index", "intercomBridge", "label", "lane", "maxRuntimeMs", "output", "outputMode", "outputSchema", "phase", "skill", "skills", "task", "timeoutMs", "toolBudget", "worktree"] as const;
 
 function isZeroUsage(usage: unknown): boolean {
 	if (!isRecord(usage)) return false;
@@ -1269,6 +1269,17 @@ function isZeroUsage(usage: unknown): boolean {
 		&& (usage.cacheRead ?? 0) === 0
 		&& (usage.cacheWrite ?? 0) === 0
 		&& (!isRecord(cost) || (cost.total ?? 0) === 0);
+}
+
+/** A child's `deadlineAt` is absolute so time spent waiting for a launch slot counts against it: the slot holder
+ *  starts no child past it and gives the child the time left as its timeout, or its own shorter one. */
+function boundByChildDeadline(params: Record<string, unknown>, now: number): Record<string, unknown> | undefined {
+	if (params.deadlineAt === undefined) return params;
+	const { deadlineAt, maxRuntimeMs, ...rest } = params;
+	const remainingMs = (deadlineAt as number) - now;
+	if (remainingMs <= 0) return undefined;
+	const ownTimeoutMs = rest.timeoutMs ?? maxRuntimeMs;
+	return { ...rest, timeoutMs: typeof ownTimeoutMs === "number" ? Math.min(ownTimeoutMs, remainingMs) : remainingMs };
 }
 
 function setupAbortResumeParams(params: Record<string, unknown>, result: WorkflowScriptChildResult, signal: AbortSignal): Record<string, unknown> | undefined {
@@ -1832,6 +1843,9 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 			if (params.gate !== undefined && params.resume !== undefined) {
 				return respond(Promise.reject(new Error(`runs.run('${key}') gate is not supported with retained resume.`)));
 			}
+			if (params.deadlineAt !== undefined && (!Number.isSafeInteger(params.deadlineAt) || (params.deadlineAt as number) < 1)) {
+				return respond(Promise.reject(new Error(`runs.run('${key}') deadlineAt must be a positive integer epoch-millisecond time.`)));
+			}
 			let resumeReference: WorkflowReceiptResumeReference | undefined;
 			try {
 				if (params.resume !== undefined && typeof params.resume !== "string") resumeReference = parseWorkflowResumeReference(params.resume);
@@ -1900,7 +1914,6 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 						if (predecessor?.continuation && predecessor.continuation.runIds.at(-1) === resolvedResumeId) resolvedResumeLineage = predecessor.continuation.runIds;
 					}
 				}
-				const launchParams = resolvedResumeId ? { ...params, resume: resolvedResumeId } : params;
 				await launchSemaphore.acquire();
 				try {
 					if (settled || finishing || stoppedLaunches.has(key) || childSignal.aborted) {
@@ -1908,9 +1921,15 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 						const text = children.get(key)?.error ?? (reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Workflow script aborted.");
 						return stoppedChildResult(key, text);
 					}
+					const launchParams = boundByChildDeadline(resolvedResumeId ? { ...params, resume: resolvedResumeId } : params, Date.now());
+					if (!launchParams) {
+						const text = `Run '${key}' was not started: its deadline passed while it waited for a launch slot.`;
+						return { key, ok: false, output: text, error: text, artifactPaths: [] };
+					}
 					acquiredLaunches.add(key);
 					const result = await options.launch(key, launchParams, childSignal, { admitted: true, batch: batch !== undefined });
-					const autoResumeParams = setupAbortResumeParams(params, result, childSignal);
+					const resumeParams = setupAbortResumeParams(params, result, childSignal);
+					const autoResumeParams = resumeParams && boundByChildDeadline(resumeParams, Date.now());
 					if (!autoResumeParams) return result;
 					resolvedResumeLineage = [...new Set([...(resolvedResumeLineage ?? []), result.runId!])];
 					trace.push({ operation: "run", key, state: "started", ...workflowStringMetadata(autoResumeParams), ...(generatedLaneKey ? { generatedLaneKey } : {}), phase: "auto-resume", runId: result.runId });
