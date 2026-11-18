@@ -182,7 +182,7 @@ subagent({
 ```
 
 - `timeoutMs` sets the workflow deadline and bounds child deadlines to the remaining time.
-- A `runs.run` or `runs.all` item's `deadlineAt` is an absolute time in epoch milliseconds for that child. The time it waits for a launch slot (`globalConcurrencyLimit`) counts against it: once it holds a slot, a child whose deadline has passed is not started and fails with `Run '<key>' was not started: its deadline passed while it waited for a launch slot.`, and a started child's timeout is the time left or its own `timeoutMs`, whichever is shorter.
+- A `runs.run` or `runs.all` item's `deadlineAt` is an absolute time in epoch milliseconds for that child. The time it waits for a launch slot (`globalConcurrencyLimit`) counts against it: once it holds a slot, a child whose deadline has passed is not started and fails with `Run '<key>' was not started: its deadline passed while it waited for a launch slot.`, and a started child's timeout is the time left or its own `timeoutMs`, whichever is shorter. The child is stopped at its deadline even while its timeout is paused for a supervisor wait.
 - `toolBudget` becomes the default for each child unless that child supplies a narrower value.
 - `usageBudget` accounts for reported usage across completed workflow children. Once exhausted, it rejects later child launches but does not stop children that are already running.
 - Budget and timeout stops return a structured `terminalOutcome` with `state: "partial"` and reason `budget_exhausted` or `timeout`. Workflow receipts keep settled child evidence for recovery.
