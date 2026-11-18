@@ -1014,7 +1014,7 @@ describe("scripted workflow runtime", () => {
 		assert.deepEqual(result.trace.filter((entry) => entry.operation === "run" && entry.key === "expired" && entry.state !== "started").map(({ state }) => state), ["failed"]);
 	});
 
-it("auto-resumes a setup-aborted child only within its deadline, bounded by the time left", async () => {
+	it("auto-resumes a setup-aborted child only within its deadline, bounded by the time left", async () => {
 		const launched: Array<{ key: string; params: Record<string, unknown> }> = [];
 		const now = Date.now();
 		const setupAborted = (key: string): WorkflowScriptChildResult => ({ key, ok: false, runId: `${key}-run`, output: "", error: "This operation was aborted", artifactPaths: [], results: [{ error: "This operation was aborted", usage: { input: 0, output: 0 }, messages: [] } as never] });
