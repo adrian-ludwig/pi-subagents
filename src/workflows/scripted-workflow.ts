@@ -1933,7 +1933,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 					resolvedResumeLineage = [...new Set([...(resolvedResumeLineage ?? []), result.runId!])];
 					trace.push({ operation: "run", key, state: "started", ...workflowStringMetadata(autoResumeParams), ...(generatedLaneKey ? { generatedLaneKey } : {}), phase: "auto-resume", runId: result.runId });
 					traceChanged();
-					return options.launch(key, autoResumeParams, childSignal, { admitted: true, batch: batch !== undefined });
+					return await options.launch(key, autoResumeParams, childSignal, { admitted: true, batch: batch !== undefined });
 				} finally {
 					clearTimeout(deadlineStop);
 					launchSemaphore.release();

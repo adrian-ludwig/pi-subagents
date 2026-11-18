@@ -1039,10 +1039,14 @@ describe("scripted workflow runtime", () => {
 		assert.deepEqual((result.value as WorkflowScriptChildResult[]).map(({ ok, error }) => ({ ok, error })), [{ ok: true, error: undefined }, { ok: false, error: "This operation was aborted" }]);
 	});
 
-it("stops a started child at its deadline even when the child's own timeout has not fired", async () => {
+	it("stops a started or auto-resumed child at its deadline even when the child's own timeout has not fired", async () => {
 		const result = await runWorkflowScript({
-			script: `return await runs.run("paused", { agent: "worker", task: "waits on its supervisor", timeoutMs: 600000, deadlineAt: Date.now() + 100 }).then(() => "finished", (error) => error.message);`,
-			launch(key, _params, signal) {
+			script: `return await runs.all([
+				{ key: "paused", agent: "worker", task: "waits on its supervisor", timeoutMs: 600000, deadlineAt: Date.now() + 150 },
+				{ key: "resumed", agent: "worker", task: "setup aborts, then waits", timeoutMs: 600000, deadlineAt: Date.now() + 150 }
+			]);`,
+			async launch(key, params, signal) {
+				if (key === "resumed" && !params.resume) return { key, ok: false, runId: "resumed-run", output: "", error: "This operation was aborted", artifactPaths: [], results: [{ error: "This operation was aborted", usage: { input: 0, output: 0 }, messages: [] } as never] };
 				return new Promise((resolve) => signal.addEventListener("abort", () => {
 					const text = signal.reason instanceof Error ? signal.reason.message : String(signal.reason);
 					resolve({ key, ok: false, output: text, error: text, artifactPaths: [] });
@@ -1052,7 +1056,10 @@ it("stops a started child at its deadline even when the child's own timeout has 
 			timeoutMs: 5_000,
 		});
 
-		assert.match(String(result.value), /Run 'paused' was stopped: its deadline passed\./);
+		assert.deepEqual((result.value as WorkflowScriptChildResult[]).map(({ key, error }) => ({ key, error })), [
+			{ key: "paused", error: "Run 'paused' was stopped: its deadline passed." },
+			{ key: "resumed", error: "Run 'resumed' was stopped: its deadline passed." },
+		]);
 	});
 
 	it("rejects a child deadlineAt that is not an epoch-millisecond integer", async () => {
