@@ -984,6 +984,70 @@ describe("scripted workflow runtime", () => {
 		assert.deepEqual((result.value as Array<{ key: string }>).map(({ key }) => key), ["one", "two", "three", "four"]);
 	});
 
+	it("refuses a child whose deadline passed while it waited for a launch slot and bounds a later child by its time left", async () => {
+		const launched: Array<{ key: string; params: Record<string, unknown> }> = [];
+		const now = Date.now();
+		const result = await runWorkflowScript({
+			script: `return await runs.all([
+				{ key: "holder", agent: "worker", task: "hold the slot" },
+				{ key: "expired", agent: "worker", task: "late", timeoutMs: 600000, deadlineAt: ${now + 10} },
+				{ key: "bounded", agent: "worker", task: "on time", timeoutMs: 600000, deadlineAt: ${now + 60_000} },
+				{ key: "own-timeout", agent: "worker", task: "short", maxRuntimeMs: 5000, deadlineAt: ${now + 60_000} }
+			]);`,
+			globalConcurrencyLimit: 1,
+			async launch(key, params) {
+				launched.push({ key, params });
+				if (key === "holder") await new Promise((resolve) => setTimeout(resolve, 40));
+				return { key, ok: true, output: key, artifactPaths: [] };
+			},
+			async status(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
+		});
+
+		assert.deepEqual(launched.map(({ key }) => key), ["holder", "bounded", "own-timeout"]);
+		const expired = (result.value as WorkflowScriptChildResult[])[1];
+		assert.equal(expired.ok, false);
+		assert.match(expired.error ?? "", /deadline passed while it waited for a launch slot/);
+		const bounded = launched[1].params;
+		assert.equal(bounded.deadlineAt, undefined);
+		assert.ok(typeof bounded.timeoutMs === "number" && bounded.timeoutMs <= 60_000 - 40 && bounded.timeoutMs > 50_000, `timeoutMs ${String(bounded.timeoutMs)}`);
+		assert.deepEqual({ timeoutMs: launched[2].params.timeoutMs, maxRuntimeMs: launched[2].params.maxRuntimeMs }, { timeoutMs: 5000, maxRuntimeMs: undefined });
+		assert.deepEqual(result.trace.filter((entry) => entry.operation === "run" && entry.key === "expired" && entry.state !== "started").map(({ state }) => state), ["failed"]);
+	});
+
+it("auto-resumes a setup-aborted child only within its deadline, bounded by the time left", async () => {
+		const launched: Array<{ key: string; params: Record<string, unknown> }> = [];
+		const now = Date.now();
+		const setupAborted = (key: string): WorkflowScriptChildResult => ({ key, ok: false, runId: `${key}-run`, output: "", error: "This operation was aborted", artifactPaths: [], results: [{ error: "This operation was aborted", usage: { input: 0, output: 0 }, messages: [] } as never] });
+		const result = await runWorkflowScript({
+			script: `return await runs.all([
+				{ key: "in-time", agent: "worker", task: "run", timeoutMs: 600000, deadlineAt: ${now + 60_000} },
+				{ key: "too-late", agent: "worker", task: "run", timeoutMs: 600000, deadlineAt: Date.now() + 200 }
+			]);`,
+			async launch(key, params) {
+				launched.push({ key, params });
+				if (params.resume) return { key, ok: true, output: "resumed", artifactPaths: [] };
+				if (key === "too-late") await new Promise((resolve) => setTimeout(resolve, 300));
+				return setupAborted(key);
+			},
+			async status(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
+		});
+
+		assert.deepEqual(launched.map(({ key, params }) => [key, params.resume ?? null]).sort(), [["in-time", null], ["in-time", "in-time-run"], ["too-late", null]]);
+		const resumed = launched.find(({ params }) => params.resume)!.params;
+		assert.equal(resumed.deadlineAt, undefined);
+		assert.ok(typeof resumed.timeoutMs === "number" && resumed.timeoutMs <= 60_000 && resumed.timeoutMs > 50_000, `timeoutMs ${String(resumed.timeoutMs)}`);
+		assert.deepEqual((result.value as WorkflowScriptChildResult[]).map(({ ok, error }) => ({ ok, error })), [{ ok: true, error: undefined }, { ok: false, error: "This operation was aborted" }]);
+	});
+
+	it("rejects a child deadlineAt that is not an epoch-millisecond integer", async () => {
+		const result = await runWorkflowScript({
+			script: `return await runs.run("bad", { agent: "worker", task: "run", deadlineAt: 1.5 }).then(() => "launched", (error) => error.message);`,
+			async launch(key) { return { key, ok: true, output: key, artifactPaths: [] }; },
+			async status(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
+		});
+		assert.match(String(result.value), /deadlineAt must be a positive integer/);
+	});
+
 	it("runs parallel lane starts and sequential stages with retained resume", async () => {
 		const launches: Array<{ key: string; params: Record<string, unknown> }> = [];
 		let active = 0;

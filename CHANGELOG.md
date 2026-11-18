@@ -4,6 +4,8 @@
 
 ### Added
 
+- A workflow child (`runs.run` or `runs.all` item) accepts `deadlineAt`, an absolute time in epoch milliseconds. A child that waited for a launch slot past its deadline is not started, and a child that starts gets the time left as its timeout when that is shorter than its own. Before, a child's `timeoutMs` started counting only once it got a slot, so a child queued behind others could finish well after the time its workflow had set aside for it.
+
 - The subagent widget shows the latest progress a running child reported with `contact_supervisor` (`progress_update`), with how long ago it reported, and `status` lists it on the child's line. Before, the report text was not shown anywhere in the parent. Thanks to [@kodfodrasz](https://github.com/kodfodrasz) for #3230.
 
 ### Fixed
