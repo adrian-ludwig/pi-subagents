@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A workflow child (`runs.run` or `runs.all` item) accepts `deadlineAt`, an absolute time in epoch milliseconds. A child that waited for a launch slot past its deadline is not started, and a child that starts gets the time left as its timeout when that is shorter than its own and is stopped at its deadline, even while it waits on its supervisor.
+
 ## [0.89.1] - 2026-11-18
 
 ### Highlights
